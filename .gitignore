@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+dashboard_log.json
+config.json
+aliases.json
+build/
+dist/
+*.spec
+*.rar
