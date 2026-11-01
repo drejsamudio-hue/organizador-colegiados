@@ -730,6 +730,12 @@ def mover(src: Path, carpeta: Path, motivo: str, detalle: str = "", nombre: str 
     return dst
 
 
+def causas_sin_carpeta(causas: list) -> dict:
+    """{'faltantes': carpetas asignadas que no estan en disco, 'sin_nombre': causas sin carpeta ni prevista}."""
+    faltantes = sorted(c.carpeta for c in causas if c.carpeta and not (CASOS / c.carpeta).is_dir())
+    return {"faltantes": faltantes, "sin_nombre": sum(1 for c in causas if not c.carpeta and not c.carpeta_prevista)}
+
+
 def _leer_propuestas(ruta: Path) -> list[dict]:
     """El CSV de la simulacion, tal cual o re-guardado por Excel (punto y coma, cp1252)."""
     for encoding in ("utf-8-sig", "cp1252"):
@@ -752,9 +758,17 @@ COLUMNAS_TANDAS = ["id", "fecha", "origen", "movidos", "primera_fila", "ultima_f
 
 
 def leer_tandas() -> list[dict]:
+    """Las tandas validas del registro; una fila editada a mano con numeros rotos se ignora (queda en el archivo)."""
     if not TANDAS_CSV.exists():
         return []
-    return _leer_csv(TANDAS_CSV)[1]
+    validas = []
+    for t in _leer_csv(TANDAS_CSV)[1]:
+        try:
+            if 0 <= int(t["primera_fila"]) <= int(t["ultima_fila"]):
+                validas.append(t)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return validas
 
 
 def huella_filas(filas: list[dict], primera: int, ultima: int) -> str:
@@ -1055,6 +1069,9 @@ def _aplicar_filas(filas: list[dict], origen: str) -> dict:
             dst = mover(src, destino, f.get("motivo", ""), f.get("detalle", ""), f.get("nombre_nuevo") or None)
             if dst == src:  # ya estaba en esa carpeta: no se movio ni se anoto
                 continue
+            pedido = (Path(f["nombre_nuevo"]).stem + src.suffix) if f.get("nombre_nuevo") else src.name
+            if dst.name != pedido:
+                avisos.append(f"[ya habia un archivo con ese nombre: quedo como {dst.name}] {src}")
             movidos += 1
             publicados += _publicar(dst, f.get("motivo", ""), f.get("detalle", ""))
         except OSError as exc:
@@ -1106,8 +1123,7 @@ def main() -> None:
     print(f"{len(pendientes)} archivos para rutear"
           f"{' (simulacion)' if args.dry_run else ''}\n")
     conteo: Counter = Counter()
-    filas = []
-    publicados = 0
+    filas, a_mover = [], []
     for p in pendientes:
         d = destino_de(p)
         conteo[d.motivo] += 1
@@ -1124,12 +1140,13 @@ def main() -> None:
                 dst_rel = d.carpeta
             print(f"  {str(rel)[:60]:60s} -> {dst_rel}  [{d.motivo} {d.detalle}]")
             continue
-        try:
-            dst = mover(p, d.carpeta, d.motivo, d.detalle)
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [ERROR] {p}: {exc}")
-            continue
-        publicados += _publicar(dst, d.motivo, d.detalle)
+        a_mover.append({"archivo": str(p), "destino": str(d.carpeta), "motivo": d.motivo, "detalle": d.detalle,
+                        "accion": "mover"})
+    if a_mover:  # con el mismo bloqueo, respaldo y registro de tanda que el dashboard: se puede deshacer
+        r = aplicar_filas(a_mover, f"cli:{origen.name}")
+        for a in r["avisos"]:
+            print(f"  {a}")
+        print(f"\nMovidos: {r['movidos']} | tanda: {r['tanda']}")
     if args.csv:
         with args.csv.open("w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
@@ -1140,8 +1157,6 @@ def main() -> None:
     for k, v in conteo.most_common():
         print(f"  {k}: {v}")
     if not args.dry_run:
-        if publicados:
-            _reindexar()
         print(f"\nRegistro: {RUTEO_CSV}")
 
 

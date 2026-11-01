@@ -28,7 +28,7 @@ from ocr_completo import hash_archivo, texto_por_hash
 EXTENSIONES = {".pdf", ".docx", ".doc", ".md", ".txt", ".csv", ".htm", ".html", ".rtf", ".odt"}
 _SOLO_INDICE = {".htm": _extraer_html, ".html": _extraer_html, ".rtf": _extraer_rtf, ".odt": _extraer_odt}
 # Subir cuando cambie la extraccion: la proxima pasada relee una vez lo que habia quedado sin texto
-VERSION_LECTURA = "2"
+VERSION_LECTURA = "3"
 AREAS_CON_CASO = {"01_Expedientes", "06_Expedientes_ajenos"}
 MAX_CHARS = 5_000_000
 LOTE = 200
@@ -159,8 +159,8 @@ def _texto_pdf(path: Path, h: str | None = None) -> tuple[str | None, str]:
     texto = "\n".join(partes)
     ocr = texto_por_hash(path, h=h)
     if ocr:
-        # PDF mixto (caratula con texto y el resto escaneado): se indexan las dos capas
-        if len(texto.strip()) >= OCR_MINIMO:
+        # PDF mixto (caratula con texto y el resto escaneado): se indexan las dos capas, aunque el texto sea corto
+        if texto.strip():
             ocr = texto + "\n" + ocr
         return ocr[:MAX_CHARS], "ocr"
     return (texto, "pdf") if texto.strip() else (None, "")
@@ -264,7 +264,7 @@ def sincronizar(base: Path | None = None, db: Path | None = None, avisar=None) -
         releer_sin_texto = version is None or version[0] != VERSION_LECTURA
 
         def releer(f: sqlite3.Row) -> bool:
-            return _ocr_nuevo(f) or (releer_sin_texto and f["fuente"] == "")
+            return _ocr_nuevo(f) or (releer_sin_texto and f["fuente"] in ("", "ocr"))
 
         pendientes = [p for p, (tam, mt) in actuales.items()
                       if p not in existentes or (existentes[p]["tamano"], existentes[p]["mtime_ns"]) != (tam, mt)

@@ -418,3 +418,12 @@ def test_indice_danado_se_informa_y_se_rehace(base, db):
     r = sync(base, db)
     assert r["nuevos"] == 1 and B.buscar("prescripcion", db=db)["total"] == 1
     assert list(db.parent.glob(db.name + ".danado-*"))
+
+
+def test_pdf_mixto_con_caratula_corta_conserva_el_texto_nativo(base, db, tmp_path, monkeypatch):
+    ocr = tmp_path / "ocr"
+    monkeypatch.setattr(O, "OCR_DIR", ocr)
+    mixto = pdf(base / "03_Doctrina/corto.pdf", "Caratula embargada")
+    _salida_ocr(ocr, mixto, "el poseedor de buena fe")
+    sync(base, db)
+    assert buscar(db, "embargada")["total"] == 1 and buscar(db, "poseedor")["total"] == 1

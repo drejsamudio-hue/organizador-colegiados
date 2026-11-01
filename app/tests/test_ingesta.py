@@ -1092,3 +1092,45 @@ def test_aplicar_con_destino_que_sale_de_la_base_no_corta_la_tanda(entorno, tmp_
         {"archivo": str(b), "destino": str(entorno / "01_Expedientes" / ".." / ".." / "fuera"), "accion": "Mover"}], "t")
     assert r["movidos"] == 1 and r["tanda"] and b.is_file()
     assert any("fuera" in x for x in r["avisos"])
+
+
+def test_cli_mueve_con_bloqueo_y_deja_una_tanda_que_se_puede_deshacer(entorno, tmp_path, monkeypatch):
+    cartera(entorno, causa("111111/2022", "2022-perez-gomez"))
+    a = escribir(entorno / "_INBOX", "escrito 111111-2022.txt", CUERPO + FIRMA)
+    tomado = []
+    real = I._bloqueo
+    monkeypatch.setattr(I, "_bloqueo", lambda *x, **k: (tomado.append(1), real(*x, **k))[1])
+    monkeypatch.setattr(sys, "argv", ["ingesta.py"])
+    I.main()
+    assert tomado and not a.exists()
+    (t,) = I.leer_tandas()
+    assert t["origen"].startswith("cli:")
+    assert I.deshacer_filas(int(t["primera_fila"]), int(t["ultima_fila"]))["restaurados"] == 1 and a.is_file()
+
+
+def test_aplicar_avisa_cuando_el_nombre_estaba_ocupado(entorno, tmp_path):
+    carpeta = entorno / "01_Expedientes" / "2022-perez-gomez"
+    (carpeta / "a.txt").write_text("viejo", encoding="utf-8")
+    nuevo = tmp_path / "a.txt"
+    nuevo.write_text("nuevo", encoding="utf-8")
+    r = I.aplicar_filas([{"archivo": str(nuevo), "destino": str(carpeta), "accion": "mover"}], "t")
+    assert r["movidos"] == 1 and (carpeta / "a.txt").read_text(encoding="utf-8") == "viejo"
+    assert any("quedo como a__1.txt" in x for x in r["avisos"])
+
+
+def test_tandas_editadas_a_mano_con_numeros_rotos_se_ignoran(entorno, tmp_path):
+    a = tmp_path / "a.txt"
+    a.write_text("x", encoding="utf-8")
+    I.aplicar_filas([{"archivo": str(a), "destino": str(entorno / "01_Expedientes" / "2022-perez-gomez"),
+                      "accion": "mover"}], "t")
+    with I.TANDAS_CSV.open("a", encoding="utf-8", newline="") as f:
+        f.write("t0002,2026-01-01,a mano,1,cero,uno,\n")
+    assert [t["id"] for t in I.leer_tandas()] == ["t0001"]
+    assert I.tandas_historicas(I.leer_ruteo(), I.leer_tandas())
+
+
+def test_causas_sin_carpeta_en_disco(entorno):
+    from cartera import Causa, normalizar_expte
+    causas = [causa("111111/2022", "2022-perez-gomez"), causa("222222/2023", "2023-renombrada"),
+              Causa(normalizar_expte("333333/2024"))]
+    assert I.causas_sin_carpeta(causas) == {"faltantes": ["2023-renombrada"], "sin_nombre": 1}

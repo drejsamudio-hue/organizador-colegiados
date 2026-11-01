@@ -755,6 +755,7 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
       <div class="stat-card stat-link" role="button" data-ir="tandas" tabindex="0" title="Organizar el inbox"><div class="stat-label">Inbox pendientes</div><div class="stat-val" id="s-inbox">—</div></div>
       <div class="stat-card stat-link" role="button" data-ir="aliases" tabindex="0" title="Ver aliases"><div class="stat-label">Aliases</div><div class="stat-val" id="s-aliases">—</div></div>
     </div>
+    <div class="card" id="avisoCarpetas" hidden style="border-left:3px solid var(--warn)"></div>
     <div class="card">
       <div class="card-title">Últimos movimientos</div>
       <div class="card-sub">Las tandas más recientes; desde Historial se ven o se deshacen</div>
@@ -911,9 +912,10 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
     <div class="card">
       <div class="card-title">Soltar archivos</div>
       <div class="card-sub">Arrastrá un grupo de archivos: se copian a _INBOX\_soltados y se simulan. Los originales quedan donde estaban.</div>
-      <div class="soltar" id="zonaSoltar" style="margin-top:10px">Soltá los archivos acá o hacé clic para elegirlos
+      <div class="soltar" id="zonaSoltar" style="margin-top:10px">Soltá los archivos acá o
+        <button class="btn" type="button" id="btnElegirSoltar">Elegir archivos…</button>
         <input type="file" id="inputSoltar" multiple hidden></div>
-      <div id="soltarEstado" class="card-sub" style="margin-top:6px"></div>
+      <div id="soltarEstado" class="card-sub" style="margin-top:6px" role="status" aria-live="polite"></div>
     </div>
     <div class="card">
       <div class="card-title">Propuestas guardadas</div>
@@ -1253,6 +1255,21 @@ async function loadOverview() {
   document.getElementById('s-archivos').textContent = fmt(stats.total_archivos);
   document.getElementById('s-inbox').textContent = fmt(stats.inbox_pendientes);
   document.getElementById('s-aliases').textContent = fmt(stats.aliases_configurados);
+  const aviso = document.getElementById('avisoCarpetas');
+  const faltan = stats.faltantes || [], sinNombre = stats.sin_nombre || 0;
+  aviso.hidden = !(faltan.length || sinNombre);
+  aviso.innerHTML = (faltan.length ? `<div class="card-title">${fmt(faltan.length)} causa${faltan.length === 1 ? '' : 's'} sin su carpeta en disco</div>
+      <div class="card-sub">La carpeta se borró o se renombró en el Explorador. Mientras tanto, lo que llegue de esa causa va a <code>_INBOX</code>.
+        Si la renombraste, poné el nombre nuevo con «Editar» en Cartera; si la borraste, volvé a crearla.</div>
+      <div class="card-sub">${faltan.slice(0, 8).map(esc).join(' · ')}${faltan.length > 8 ? ' …' : ''}</div>` : '')
+    + (sinNombre ? `<div class="card-title" style="margin-top:${faltan.length ? 12 : 0}px">${fmt(sinNombre)} causa${sinNombre === 1 ? '' : 's'} de la cartera sin carpeta asignada</div>
+      <div class="card-sub">Sus archivos no se reconocen por número hasta que tengan carpeta.</div>
+      <button class="btn" id="btnAsignarCarpetas" style="margin-top:8px">Asignarles carpeta</button>` : '');
+  document.getElementById('btnAsignarCarpetas')?.addEventListener('click', async () => {
+    const r = await api('/api/cartera/asignar-carpetas', { method: 'POST' });
+    alert(`${r.asignadas} causa${r.asignadas === 1 ? '' : 's'} con carpeta prevista: se crea sola al llegar el primer archivo.`);
+    loadOverview().catch(err => mostrarError(document.getElementById('page-overview'), err));
+  });
 
   const badge = document.getElementById('inboxBadge');
   badge.textContent = stats.inbox_pendientes;
@@ -1403,7 +1420,7 @@ document.getElementById('escBtn').addEventListener('click', async () => {
     escHallazgos = r.causas;
     const nuevas = r.causas.filter(c => !c.en_cartera).length;
     document.getElementById('escResultado').innerHTML = r.causas.length
-      ? `<div class="card-sub">${fmt(r.revisados)} archivos revisados${r.truncado ? ' (se cortó en el límite)' : ''} · ${r.causas.length} expedientes · ${nuevas} nuevos</div>
+      ? `<div class="card-sub">${fmt(r.revisados)} archivos revisados${r.truncado ? ' (se cortó en el límite)' : ''}${r.textos_sin_leer ? ` · el texto se leyó solo en los primeros ${fmt(r.max_textos)}: ${fmt(r.textos_sin_leer)} archivos se miraron solo por el nombre (escaneá subcarpetas por separado para leerlos)` : ''} · ${r.causas.length} expedientes · ${nuevas} nuevos</div>
          <div class="table-wrap"><table class="data-table"><thead><tr><th></th><th>Expediente</th><th>Archivos</th><th>Hallado en</th><th>Carátula</th><th>Ejemplo</th></tr></thead><tbody>`
         + r.causas.map((c, i) => `<tr><td><input type="checkbox" class="esc-sel" data-i="${i}" ${c.en_cartera ? 'disabled' : 'checked'}></td>
             <td class="mono">${esc(c.expte)}${c.en_cartera ? ' <span style="color:var(--ink-muted)">(ya cargada)</span>' : ''}</td>
@@ -1664,7 +1681,8 @@ async function aplicarPropuesta() {
 // Soltar archivos
 const zona = document.getElementById('zonaSoltar');
 const inputSoltar = document.getElementById('inputSoltar');
-zona.addEventListener('click', () => inputSoltar.click());
+zona.addEventListener('click', ev => { if (ev.target === zona) inputSoltar.click(); });
+document.getElementById('btnElegirSoltar').addEventListener('click', () => inputSoltar.click());
 ['dragenter', 'dragover'].forEach(ev => zona.addEventListener(ev, e => { e.preventDefault(); zona.classList.add('encima'); }));
 ['dragleave', 'drop'].forEach(ev => zona.addEventListener(ev, e => { e.preventDefault(); zona.classList.remove('encima'); }));
 zona.addEventListener('drop', e => subirArchivos([...e.dataTransfer.files]));

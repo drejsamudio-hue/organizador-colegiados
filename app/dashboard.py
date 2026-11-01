@@ -51,6 +51,20 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024 * 1024
 
 
+@app.errorhandler(Exception)
+def _error_json(exc):
+    """Los errores de la API vuelven como JSON legible (la interfaz muestra el mensaje en vez de "HTTP 500")."""
+    from werkzeug.exceptions import HTTPException
+    if isinstance(exc, HTTPException):
+        return exc
+    if not request.path.startswith("/api/"):
+        raise exc
+    if not BASE.is_dir():
+        return jsonify({"error": f"La carpeta base no esta disponible (disco desconectado?): {BASE}"}), 503
+    app.logger.exception("error en %s", request.path)
+    return jsonify({"error": f"Error interno: {exc}"}), 500
+
+
 @app.before_request
 def _solo_local():
     # Frena DNS rebinding: otra web no puede hablarle a la API aunque resuelva a 127.0.0.1.
@@ -230,7 +244,27 @@ def api_stats():
         "total_archivos": total_archivos,
         "inbox_pendientes": inbox,
         "aliases_configurados": len(_leer_aliases().get("aliases", [])),
+        **ingesta.causas_sin_carpeta(_cargar_cartera()),
     })
+
+
+@app.route("/api/cartera/asignar-carpetas", methods=["POST"])
+def api_cartera_asignar_carpetas():
+    """A las causas sin carpeta ni carpeta prevista (por ejemplo, importadas por consola) les asigna una prevista:
+    se crea sola al llegar el primer archivo de esa causa."""
+    with _cartera_lock:
+        causas = _cargar_cartera()
+        ocupadas = {n for c in causas for n in (c.carpeta, c.carpeta_prevista) if n}
+        asignadas = 0
+        for c in causas:
+            if not c.carpeta and not c.carpeta_prevista:
+                c.carpeta_prevista = cartera_alta.carpeta_libre(c, ocupadas)
+                ocupadas.add(c.carpeta_prevista)
+                asignadas += 1
+        if asignadas:
+            guardar_cartera(causas, _sistema() / "cartera.json")
+    _log_action("cartera_asignar_carpetas", {"asignadas": asignadas})
+    return jsonify({"asignadas": asignadas})
 
 
 @app.route("/api/expedientes")
@@ -629,7 +663,8 @@ def api_propuesta_aplicar(nombre):
     ruta = _ruta_propuesta(nombre)
     if ruta is None:
         return jsonify({"error": "propuesta desconocida"}), 404
-    filas = (request.get_json(silent=True) or {}).get("filas")
+    cuerpo = request.get_json(silent=True)
+    filas = cuerpo.get("filas") if isinstance(cuerpo, dict) else None
     if not isinstance(filas, list):
         return jsonify({"error": "Se esperaba la lista de filas"}), 400
     base = BASE.resolve()
@@ -887,7 +922,10 @@ def api_buscar_abrir():
     ruta = datos.get("ruta")
     if not isinstance(ruta, str) or not busqueda.ruta_indexada(ruta) or not Path(ruta).is_file():
         return jsonify({"error": "archivo desconocido"}), 404
-    _lanzar("carpeta" if datos.get("carpeta") else "archivo", ruta)
+    try:
+        _lanzar("carpeta" if datos.get("carpeta") else "archivo", ruta)
+    except (OSError, AttributeError) as exc:  # sin programa asociado, o fuera de Windows
+        return jsonify({"error": f"No se pudo abrir: revisa que haya un programa asociado a este tipo de archivo ({exc})"}), 400
     return jsonify({"ok": True})
 
 

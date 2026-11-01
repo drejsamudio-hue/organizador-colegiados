@@ -523,6 +523,51 @@ def test_ocr_completo_desde_el_dashboard(base, cliente, monkeypatch):
     assert r["estado"] == "listo" and r["hechos"] == 2 and r["ok"] == 1
 
 
+def test_inicio_avisa_causas_sin_carpeta_y_se_les_asigna(base, cliente):
+    from cartera import Causa, cargar
+    causas = cargar(base / "_SISTEMA" / "cartera.json")
+    causas.append(Causa(normalizar_expte("333333/2024"), caratula="ROBLES c/ SOSA"))
+    causas[0].carpeta = "2022-perez-gomez-renombrada"
+    guardar(causas, base / "_SISTEMA" / "cartera.json")
+    s = cliente.get("/api/stats").get_json()
+    assert s["faltantes"] == ["2022-perez-gomez-renombrada"] and s["sin_nombre"] == 1
+    assert cliente.post("/api/cartera/asignar-carpetas").get_json()["asignadas"] == 1
+    assert cliente.get("/api/stats").get_json()["sin_nombre"] == 0
+    nueva = next(c for c in cargar(base / "_SISTEMA" / "cartera.json") if c.expte.clave_completa == "333333/2024")
+    assert nueva.carpeta_prevista and not nueva.carpeta
+
+
+def test_aplicar_con_cuerpo_que_no_es_objeto_da_400(base, cliente, tmp_path):
+    origen = tmp_path / "entrada"
+    origen.mkdir()
+    (origen / "x 111111-2022.txt").write_text(CUERPO, encoding="utf-8")
+    sim = cliente.post("/api/simular", json={"origen": str(origen)}).get_json()
+    for _ in range(100):
+        if cliente.get(f"/api/simular/{sim['id']}").get_json()["estado"] != "corriendo":
+            break
+        time.sleep(0.05)
+    assert cliente.post(f"/api/propuestas/{sim['csv']}/aplicar", json=[{"filas": []}]).status_code == 400
+
+
+def test_abrir_sin_programa_asociado_da_mensaje(base, cliente, monkeypatch):
+    archivo = base / "01_Expedientes" / "2022-perez-gomez" / "01_siged" / "a.txt"
+    archivo.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(D.busqueda, "ruta_indexada", lambda r: True)
+
+    def falla(modo, ruta):
+        raise OSError("No hay ninguna aplicacion asociada")
+    monkeypatch.setattr(D, "_lanzar", falla)
+    r = cliente.post("/api/buscar/abrir", json={"ruta": str(archivo)})
+    assert r.status_code == 400 and "programa asociado" in r.get_json()["error"]
+
+
+def test_base_desconectada_da_503_con_mensaje(base, cliente, monkeypatch, tmp_path):
+    monkeypatch.setattr(D, "BASE", tmp_path / "desconectada")
+    monkeypatch.setattr(D, "_inventario", lambda: (_ for _ in ()).throw(FileNotFoundError("no esta")))
+    r = cliente.get("/api/stats")
+    assert r.status_code == 503 and "no esta disponible" in r.get_json()["error"]
+
+
 def test_altas_simultaneas_no_se_pisan(base, cliente, monkeypatch):
     import threading
     agregar = D.cartera_alta.agregar

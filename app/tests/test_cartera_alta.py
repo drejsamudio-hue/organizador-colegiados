@@ -76,3 +76,19 @@ def test_escanear_por_texto_toma_expediente_y_caratula(tmp_path):
         "Expte. N° 345678/2022 - ROBLES MARCOS c/ SOSA LUIS s/ Daños y perjuicios. " * 3, encoding="utf-8")
     r = escanear(tmp_path, fuentes=("texto",))
     assert [c["expte"] for c in r["causas"]] == ["345678/2022"] and r["causas"][0]["origen"] == "texto"
+
+
+def test_lista_con_bis_conserva_el_incidente():
+    items, invalidas = parsear_lista("111111/2022 bis1/24 PEREZ c/ GOMEZ s/ Incidente\n222222/2023")
+    assert not invalidas
+    assert items[0][0].clave_completa == "111111/2022 bis1/24" and items[0][1] == "PEREZ c/ GOMEZ s/ Incidente"
+    assert items[1][0].clave_completa == "222222/2023"
+
+
+def test_escaneo_informa_cuantos_textos_no_leyo(tmp_path, monkeypatch):
+    import cartera_alta
+    monkeypatch.setattr(cartera_alta, "MAX_TEXTOS", 2)
+    for i in range(5):
+        (tmp_path / f"doc{i}.txt").write_text("Expediente 111111/2022 PEREZ c/ GOMEZ", encoding="utf-8")
+    r = escanear(tmp_path, ("texto",))
+    assert r["textos_sin_leer"] == 3 and r["max_textos"] == 2

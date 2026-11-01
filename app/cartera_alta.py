@@ -15,7 +15,7 @@ MAX_TEXTOS = 300
 FUENTES = ("carpeta", "archivo", "texto")
 
 _EN_NOMBRE = re.compile(r"(?<![\d/.\-])(\d{2,6})\s*[-_/]\s*((?:19|20)\d{2})(?!\d)")
-_INICIO_LISTA = re.compile(r"^\s*(\d{1,7}\s*/\s*\d{4})(.*)$")
+_INICIO_LISTA = re.compile(r"^\s*(\d{1,7}\s*/\s*\d{4}(?:\s*bis\s*\d+\s*[/-]\s*\d{2,4})?)(.*)$", re.I)
 
 
 def compilar_patron(texto: str | None) -> re.Pattern | None:
@@ -98,7 +98,7 @@ def escanear(carpeta: Path, fuentes: tuple[str, ...] = ("carpeta", "archivo"), p
     claves_en_cartera = claves_en_cartera or set()
     raiz = carpeta.resolve()
     hallados: dict[str, dict] = {}
-    revisados = textos = 0
+    revisados = textos = sin_leer = 0
     truncado = False
 
     for dirpath, dirnames, filenames in os.walk(raiz):
@@ -121,7 +121,9 @@ def escanear(carpeta: Path, fuentes: tuple[str, ...] = ("carpeta", "archivo"), p
                     if e is not None:
                         origen = "carpeta"
                         break
-            if "texto" in fuentes and textos < MAX_TEXTOS:
+            if "texto" in fuentes and textos >= MAX_TEXTOS:
+                sin_leer += 1
+            elif "texto" in fuentes:
                 textos += 1
                 try:
                     cuerpo, _ = extraer_universal(Path(dirpath) / nombre, 8000)
@@ -145,5 +147,6 @@ def escanear(carpeta: Path, fuentes: tuple[str, ...] = ("carpeta", "archivo"), p
         if truncado:
             break
 
-    return {"carpeta": str(raiz), "revisados": revisados, "truncado": truncado,
+    return {"carpeta": str(raiz), "revisados": revisados, "truncado": truncado, "textos_sin_leer": sin_leer,
+            "max_textos": MAX_TEXTOS,
             "causas": sorted(hallados.values(), key=lambda h: (-h["archivos"], h["expte"]))}
