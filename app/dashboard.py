@@ -126,7 +126,8 @@ def _reiniciar() -> None:
         try:  # no cortar una tanda a mitad de camino: se espera a que termine de aplicar o deshacer
             ingesta._bloqueo(espera=600).__enter__()
         except ingesta.Ocupado:
-            pass
+            print("La configuracion quedo guardada, pero hay una tanda que no termina: cerra y volve a abrir el programa.")
+            return
         flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
         congelado = getattr(sys, "frozen", False)
         args = sys.argv[1:] if congelado else sys.argv
@@ -163,6 +164,11 @@ def api_config_post():
         destino.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         return jsonify({"error": f"No se pudo crear la carpeta base: {exc}"}), 400
+    try:
+        with ingesta._bloqueo(espera=0):
+            pass
+    except ingesta.Ocupado:
+        return jsonify({"error": "Hay una tanda aplicandose o deshaciendose: espera a que termine y volve a guardar"}), 409
     cfg.guardar_config({"estudio": estudio, "ubicacion": ubicacion, "apellidos": apellidos, "base": str(destino)})
     _reiniciar()
     return jsonify({"ok": True, "reiniciando": True})

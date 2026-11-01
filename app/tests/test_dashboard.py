@@ -656,3 +656,35 @@ def test_contraste_y_foco_visible():
     html = (Path(D.__file__).resolve().parent / "dashboard_app.html").read_text(encoding="utf-8")
     assert "--ink-muted: #4E6886;" in html and "#385A78" not in html and "#38526E" not in html
     assert ".btn:focus-visible" in html and ".nav-item:focus-visible" in html
+
+
+def test_config_no_reinicia_con_una_tanda_en_curso(base, cliente, config_tmp, tmp_path):
+    import ingesta
+    C, reinicios = config_tmp
+    with ingesta._bloqueo():
+        r = cliente.post("/api/config", json=_config_valida(tmp_path))
+    assert r.status_code == 409 and "tanda" in r.get_json()["error"] and not reinicios
+    assert not C.CONFIG_PATH.exists()
+
+
+def test_reinicio_no_sigue_si_la_tanda_no_termina(monkeypatch):
+    import ingesta
+
+    def ocupado(**k):
+        raise ingesta.Ocupado("ocupado")
+    lanzados, hilos = [], []
+    monkeypatch.setattr(ingesta, "_bloqueo", ocupado)
+    monkeypatch.setattr(D.subprocess, "Popen", lambda *a, **k: lanzados.append(a))
+    monkeypatch.setattr(D.time, "sleep", lambda s: None)
+    monkeypatch.setattr(D.os, "_exit", lambda c: lanzados.append("exit"))
+
+    class Hilo:
+        def __init__(self, target, daemon):
+            self.target = target
+            hilos.append(self)
+
+        def start(self):
+            self.target()
+    monkeypatch.setattr(D.threading, "Thread", Hilo)
+    D._reiniciar()
+    assert hilos and not lanzados

@@ -7,8 +7,8 @@ Ordena en carpetas por causa los PDFs y documentos de tu estudio. Corre en tu co
 - Lleva una **cartera** con tus causas (número de expediente y carátula).
 - Mira una carpeta desordenada (descargas, escritorio, un pendrive) y **propone** a qué causa va cada archivo, según el número de expediente, la carátula o el nombre.
 - Vos revisás la propuesta, corregís lo que haga falta y **recién ahí** se mueven los archivos.
-- Cada movimiento queda en un historial y **se puede deshacer**. Nunca borra ni pisa archivos: si un archivo está abierto en otro programa o el destino ya existe, queda donde estaba y se avisa. Deshacer saltea los archivos que modificaste después de moverlos.
-- **Buscar** encuentra palabras dentro de tus documentos (PDF, Word, RTF, ODT, HTML y texto), sin importar las tildes, y abre el archivo o su carpeta. El índice se arma solo al abrir el programa; lo que agregues a mano entra la próxima vez que lo abras, o al tocar "Actualizar índice".
+- Cada movimiento queda en un historial y **se puede deshacer**. Nunca borra ni pisa archivos: si un archivo está abierto en otro programa, queda donde estaba y se avisa; si en el destino ya hay uno con el mismo nombre, el nuevo se guarda como `nombre__1` (también se avisa y se puede deshacer). Deshacer saltea los archivos que modificaste después de moverlos.
+- **Buscar** encuentra palabras dentro de tus documentos (PDF, Word `.docx`, RTF, ODT, HTML y texto; los `.doc` viejos solo si la PC tiene antiword, si no se encuentran por el nombre), sin importar las tildes, y abre el archivo o su carpeta. El índice se arma solo al abrir el programa; lo que agregues a mano entra la próxima vez que lo abras, o al tocar "Actualizar índice".
 
 ## Instalación
 
