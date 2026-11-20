@@ -58,6 +58,39 @@ def _apellidos() -> tuple[str, ...]:
 
 APELLIDOS_PROPIOS = _apellidos()
 
+HOSTS_LOCALES = frozenset({"localhost", "127.0.0.1"})
+
+
+def _host(texto: str) -> str:
+    """Nombre de host de una entrada escrita a mano: sin esquema, sin ruta y sin puerto."""
+    h = texto.strip().lower().split("://", 1)[-1].split("/", 1)[0]
+    return h.rsplit(":", 1)[0] if h.count(":") == 1 else h
+
+
+def hosts_extra() -> list[str]:
+    """Hosts adicionales con los que se puede hablar al dashboard (p. ej. un tunel propio): los de la variable
+    ORGANIZADOR_HOSTS (separados por coma) y los de _SISTEMA/hosts_permitidos.txt (uno por linea, # comenta).
+    Por defecto no hay ninguno: solo localhost. El tunel debe traer su propia autenticacion; el dashboard no la tiene."""
+    out: list[str] = []
+    crudos = os.environ.get("ORGANIZADOR_HOSTS", "").replace(";", ",").split(",")
+    try:
+        crudos += (BASE / "_SISTEMA" / "hosts_permitidos.txt").read_text(encoding="utf-8-sig").splitlines()  # sin BOM al frente
+    except OSError:
+        pass
+    for crudo in crudos:
+        h = _host(crudo.split("#", 1)[0])
+        if h and h not in HOSTS_LOCALES and h not in out:
+            out.append(h)
+    return out
+
+
+def hosts_permitidos() -> set[str]:
+    """localhost siempre, mas hosts_extra(); se lee en cada llamada para que el archivo se pueda editar sin reiniciar."""
+    return set(HOSTS_LOCALES) | set(hosts_extra())
+
+
+HOSTS_EXTRA = hosts_extra()
+
 
 def guardar_config(datos: dict) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)

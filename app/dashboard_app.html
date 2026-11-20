@@ -414,6 +414,9 @@ body {
 .btn:disabled:hover { background: var(--surface); }
 .btn-primary:disabled:hover { background: var(--accent-fill); }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skip-link { position: absolute; left: 8px; top: -48px; z-index: 1000; padding: 8px 14px; background: var(--accent-fill); color: var(--on-accent); border-radius: 6px; text-decoration: none; }
+.skip-link:focus { top: 8px; }
+.main:focus { outline: none; }
 .nav-item:focus-visible { outline: 2px solid rgba(255,255,255,0.60); outline-offset: -2px; }
 
 /* ── TABLES ── */
@@ -434,12 +437,12 @@ body {
   position: sticky;
   top: 0;
   background: var(--surface);
-  cursor: pointer;
   user-select: none;
   white-space: nowrap;
 }
 .data-table th { transition: color var(--t-fast); }
-.data-table th:hover { color: var(--accent); }
+.data-table th[data-sort] { cursor: pointer; }
+.data-table th[data-sort]:hover { color: var(--accent); }
 .data-table td {
   padding: var(--s-2) var(--s-3);
   border-bottom: 1px solid var(--grid);
@@ -678,6 +681,7 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
 </style>
 </head>
 <body>
+<a class="skip-link" href="#contenido">Ir al contenido</a>
 
 <div class="cfg-overlay" id="cfgOverlay" hidden>
   <form class="card cfg-panel" id="cfgForm" role="dialog" aria-modal="true" aria-labelledby="cfgTitulo">
@@ -744,7 +748,7 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
   <div class="sidebar-footer" id="sbFooter"></div>
 </aside>
 
-<main class="main">
+<main class="main" id="contenido" tabindex="-1">
   <!-- OVERVIEW -->
   <div class="section active" id="page-overview">
     <h1 class="page-title">Resumen general</h1>
@@ -778,9 +782,9 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
     <h1 class="page-title">Buscar</h1>
     <p class="page-subtitle" id="buscarEstado">Texto completo de los documentos del archivo</p>
     <div class="search-bar">
-      <input class="search-input" id="buscarQ" placeholder="Texto a buscar. &quot;Frase exacta&quot; entre comillas; poseed* busca por prefijo" autocomplete="off">
-      <select class="search-input" id="buscarArea" style="max-width:200px"><option value="">Todas las áreas</option></select>
-      <input class="search-input" id="buscarCaso" placeholder="Carpeta del caso (exacta)" style="max-width:220px" autocomplete="off">
+      <input class="search-input" id="buscarQ" aria-label="Texto a buscar" placeholder="Texto a buscar. &quot;Frase exacta&quot; entre comillas; poseed* busca por prefijo" autocomplete="off">
+      <select class="search-input" id="buscarArea" aria-label="Filtrar por área" style="max-width:200px"><option value="">Todas las áreas</option></select>
+      <input class="search-input" id="buscarCaso" aria-label="Carpeta del caso" placeholder="Carpeta del caso (exacta)" style="max-width:220px" autocomplete="off">
       <button class="btn btn-primary" id="buscarBtn">Buscar</button>
       <button class="btn" id="buscarActualizar">Actualizar índice</button>
       <button class="btn" id="buscarOcr" title="Lee el texto de los PDF escaneados para que aparezcan en la búsqueda. Corre en segundo plano y se puede retomar.">OCR de escaneados</button>
@@ -794,15 +798,15 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
     <h1 class="page-title">Expedientes</h1>
     <p class="page-subtitle">Todas las causas en el archivo</p>
     <div class="search-bar">
-      <input class="search-input" id="expSearch" placeholder="Buscar causa..." autocomplete="off">
+      <input class="search-input" id="expSearch" aria-label="Buscar causa" placeholder="Buscar causa..." autocomplete="off">
     </div>
     <div class="table-wrap">
       <table class="data-table" id="expTable">
         <thead><tr>
-          <th>Causa</th>
-          <th>Archivos</th>
-          <th>Subcarpetas</th>
-          <th>Última modif.</th>
+          <th data-sort="nombre" tabindex="0">Causa</th>
+          <th data-sort="total" tabindex="0">Archivos</th>
+          <th data-sort="subcarpetas" tabindex="0">Subcarpetas</th>
+          <th data-sort="ultima_mod" tabindex="0">Última modif.</th>
         </tr></thead>
         <tbody id="expBody"></tbody>
       </table>
@@ -824,20 +828,20 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
       </div>
       <div class="alta-panel" id="alta-uno">
         <div class="search-bar">
-          <input class="search-input" id="altaExpte" placeholder="Expediente, ej. 1234/2023" style="max-width:220px">
-          <input class="search-input" id="altaCaratula" placeholder="Carátula (opcional)">
-          <input class="search-input" id="altaDependencia" placeholder="Juzgado (opcional)" style="max-width:220px">
+          <input class="search-input" id="altaExpte" aria-label="Número de expediente" placeholder="Expediente, ej. 1234/2023" style="max-width:220px">
+          <input class="search-input" id="altaCaratula" aria-label="Carátula" placeholder="Carátula (opcional)">
+          <input class="search-input" id="altaDependencia" aria-label="Juzgado o dependencia" placeholder="Juzgado (opcional)" style="max-width:220px">
           <button class="btn btn-primary" id="altaUnoBtn">Agregar</button>
         </div>
       </div>
       <div class="alta-panel" id="alta-lista" hidden>
-        <textarea class="search-input" id="altaTexto" rows="6" style="width:100%;box-sizing:border-box"
+        <textarea class="search-input" id="altaTexto" aria-label="Lista de expedientes, uno por línea" rows="6" style="width:100%;box-sizing:border-box"
           placeholder="Una causa por línea. Número y, si querés, la carátula:&#10;1234/2023&#10;5678/2022 PEREZ c/ GOMEZ s/ Daños"></textarea>
         <div class="search-bar" style="margin-top:8px"><button class="btn btn-primary" id="altaListaBtn">Cargar lista</button></div>
       </div>
       <div class="alta-panel" id="alta-escanear" hidden>
         <div class="search-bar">
-          <input class="search-input" id="escCarpeta" placeholder="Carpeta donde buscar, ruta completa">
+          <input class="search-input" id="escCarpeta" aria-label="Carpeta donde buscar" placeholder="Carpeta donde buscar, ruta completa">
           <button class="btn btn-primary" id="escBtn">Buscar</button>
         </div>
         <div class="search-bar" style="gap:16px;flex-wrap:wrap">
@@ -847,8 +851,8 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
         </div>
         <details style="margin-top:6px"><summary>Opciones</summary>
           <div class="search-bar">
-            <input class="search-input" id="escPatron" placeholder="Patrón propio con dos grupos, ej. EXP(\d+)\.(\d{4})">
-            <input class="search-input" id="escProf" type="number" min="1" max="12" value="6" style="max-width:110px" title="Niveles de subcarpetas">
+            <input class="search-input" id="escPatron" aria-label="Patrón propio" placeholder="Patrón propio con dos grupos, ej. EXP(\d+)\.(\d{4})">
+            <input class="search-input" id="escProf" aria-label="Niveles de subcarpetas" type="number" min="1" max="12" value="6" style="max-width:110px" title="Niveles de subcarpetas">
           </div>
           <div class="card-sub">El patrón es una expresión regular con dos grupos: número y año. Se prueba antes que los formatos habituales.</div>
         </details>
@@ -857,8 +861,8 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
       <div class="card-sub" id="altaMsg" style="margin-top:8px" hidden></div>
     </div>
     <div class="search-bar">
-      <input class="search-input" id="carteraSearch" placeholder="Buscar número, carátula o carpeta..." autocomplete="off">
-      <select class="search-input" id="carteraEstado" style="max-width:200px">
+      <input class="search-input" id="carteraSearch" aria-label="Buscar en la cartera" placeholder="Buscar número, carátula o carpeta..." autocomplete="off">
+      <select class="search-input" id="carteraEstado" aria-label="Filtrar por estado" style="max-width:200px">
         <option value="">Todos los estados</option>
         <option value="ok">Con carpeta</option>
         <option value="crear">Prevista (a demanda)</option>
@@ -866,14 +870,14 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
         <option value="revisar">A revisar</option>
       </select>
     </div>
-    <div class="table-wrap"><table class="data-table"><thead><tr>
-      <th>Expediente</th><th>Carátula</th><th>Carpeta</th><th>Estado</th><th>Archivos</th><th>Fuentes</th><th></th>
+    <div class="table-wrap"><table class="data-table" id="tablaCartera"><thead><tr>
+      <th data-sort="expte" tabindex="0">Expediente</th><th data-sort="caratula" tabindex="0">Carátula</th><th data-sort="carpeta" tabindex="0">Carpeta</th><th data-sort="accion" tabindex="0">Estado</th><th data-sort="archivos" tabindex="0">Archivos</th><th data-sort="fuentes" tabindex="0">Fuentes</th><th></th>
     </tr></thead><tbody id="carteraBody"></tbody></table></div>
     <div class="card" style="margin-top:16px">
       <div class="card-title">Carpetas fuera de la cartera</div>
       <div class="card-sub">En 01_Expedientes pero no en tu cartera. "Es mía" la deja como propia; "Ajena" arma una propuesta en Tandas para sacarla (fallos y doctrina a su tema, el resto a 06_Expedientes_ajenos).</div>
       <div class="search-bar" style="margin-top:8px">
-        <select class="search-input" id="fueraClase" style="max-width:220px">
+        <select class="search-input" id="fueraClase" aria-label="Filtrar carpetas por análisis" style="max-width:220px">
           <option value="">Todas</option><option value="propia_probable">Probablemente mías</option>
           <option value="dudosa">Dudosas</option><option value="ajena">Ajenas</option>
         </select>
@@ -889,11 +893,11 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
     <h1 class="page-title">Escritorio SIGED</h1>
     <p class="page-subtitle" id="escritorioArchivo">Última lectura del escritorio judicial (solo lectura)</p>
     <div class="search-bar">
-      <input class="search-input" id="escritorioSearch" placeholder="Buscar..." autocomplete="off">
+      <input class="search-input" id="escritorioSearch" aria-label="Buscar en el escritorio" placeholder="Buscar..." autocomplete="off">
       <label class="check-row"><input type="checkbox" id="escritorioFaltan"> Solo los que no están en la cartera</label>
     </div>
-    <div class="table-wrap"><table class="data-table"><thead><tr>
-      <th>Número</th><th>Designación</th><th>Dependencia</th><th>En cartera</th>
+    <div class="table-wrap"><table class="data-table" id="tablaEscritorio"><thead><tr>
+      <th data-sort="numero" tabindex="0">Número</th><th data-sort="designacion" tabindex="0">Designación</th><th data-sort="origen" tabindex="0">Dependencia</th><th>En cartera</th>
     </tr></thead><tbody id="escritorioBody"></tbody></table></div>
   </div>
 
@@ -904,7 +908,7 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
     <div class="card">
       <div class="card-title">Nueva simulación</div>
       <div class="search-bar" style="margin-top:8px">
-        <input class="search-input" id="simOrigen" value="" placeholder="Carpeta a organizar...">
+        <input class="search-input" id="simOrigen" aria-label="Carpeta a organizar" value="" placeholder="Carpeta a organizar...">
         <button class="btn btn-primary" id="btnSimular">Simular</button>
       </div>
       <div id="simEstado" class="card-sub"></div>
@@ -932,7 +936,7 @@ details > summary { cursor: pointer; color: var(--ink-2); font-size: var(--fs-sm
     <h1 class="page-title">Historial</h1>
     <p class="page-subtitle" id="historialSub">Todos los movimientos (consola y dashboard), agrupados en tandas</p>
     <div class="search-bar">
-      <input class="search-input" id="historialSearch" placeholder="Filtrar por archivo o carpeta..." autocomplete="off">
+      <input class="search-input" id="historialSearch" aria-label="Filtrar el historial por archivo o carpeta" placeholder="Filtrar por archivo o carpeta..." autocomplete="off">
       <button class="btn" id="btnHistorialBuscar">Buscar</button>
     </div>
     <div id="historialEstado"></div>
@@ -1055,7 +1059,7 @@ document.addEventListener('click', ev => {
   if (el) { ev.preventDefault(); irA(el.dataset.ir); }
 });
 document.addEventListener('keydown', ev => {
-  const el = ev.target.closest?.('.stat-link, tr[data-caso]');
+  const el = ev.target.closest?.('.stat-link, tr[data-caso], th[data-sort]');
   if (el && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); el.click(); }
 });
 
@@ -1066,7 +1070,7 @@ function loadPage(page) {
 }
 
 function esc(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return String(s ?? '').replace(/[&<>"'`]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
 }
 async function api(path, opts) {
   const r = await fetch(API + path, opts);
@@ -1079,8 +1083,10 @@ async function api(path, opts) {
   return body;
 }
 function mostrarError(el, err) {
+  el.querySelectorAll(':scope > .error-box').forEach(x => x.remove());
   const div = document.createElement('div');
   div.className = 'card error-box';
+  div.setAttribute('role', 'alert');
   div.style.color = 'var(--crit)';
   div.style.whiteSpace = 'pre-wrap';
   div.textContent = 'Error: ' + err.message;
@@ -1133,13 +1139,17 @@ function hbar(label, count, max, color) {
 }
 
 // Buscar
-let buscarListo = false;
+let areasMostradas = null;
 async function loadBuscar() {
   const e = await api('/api/buscar/estado');
   const sel = document.getElementById('buscarArea');
-  if (!buscarListo) {
-    e.areas.forEach(a => sel.insertAdjacentHTML('beforeend', `<option value="${esc(a)}">${esc(a)}</option>`));
-    buscarListo = true;
+  const firmaAreas = e.areas.join('\n');
+  if (firmaAreas !== areasMostradas) {
+    const elegida = sel.value;
+    sel.innerHTML = '<option value="">Todas las áreas</option>'
+      + e.areas.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
+    sel.value = elegida;
+    areasMostradas = firmaAreas;
   }
   document.getElementById('buscarEstado').textContent = e.danado
     ? 'El índice de búsqueda está dañado: tocá «Actualizar índice» para rehacerlo (no se pierde ningún archivo).'
@@ -1303,6 +1313,38 @@ async function loadUltimos() {
     || '<div class="vacio"><strong>Todavía no hay movimientos</strong>Cuando organices el inbox desde Tandas, las tandas aparecen acá.</div>';
 }
 
+/* ── ORDEN DE TABLAS ── clic (o Enter) en el encabezado ordena por esa columna */
+const ORDEN = { exp: null, cartera: null, escritorio: null };   // {col, desc}
+function ordenarLista(lista, estado, columnas) {
+  if (!estado) return lista;
+  const valor = columnas[estado.col];
+  return [...lista].sort((a, b) => {
+    const x = valor(a), y = valor(b);
+    const cmp = (typeof x === 'number' && typeof y === 'number') ? x - y : String(x ?? '').localeCompare(String(y ?? ''), 'es');
+    return estado.desc ? -cmp : cmp;
+  });
+}
+function thOrden(idTabla, clave, repintar) {
+  document.querySelectorAll(`#${idTabla} th[data-sort]`).forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.dataset.sort;
+      ORDEN[clave] = (ORDEN[clave] && ORDEN[clave].col === col) ? { col, desc: !ORDEN[clave].desc } : { col, desc: false };
+      document.querySelectorAll(`#${idTabla} th[data-sort]`).forEach(h => {
+        h.textContent = h.textContent.replace(/ [▾▴]$/, '');
+        h.removeAttribute('aria-sort');
+      });
+      th.textContent += ORDEN[clave].desc ? ' ▾' : ' ▴';
+      th.setAttribute('aria-sort', ORDEN[clave].desc ? 'descending' : 'ascending');
+      repintar();
+    });
+  });
+}
+const COLS_EXP = { nombre: c => c.nombre, total: c => c.total,
+  subcarpetas: c => Object.keys(c.subcarpetas).length, ultima_mod: c => c.ultima_mod || '' };
+const COLS_CARTERA = { expte: c => c.expte, caratula: c => c.caratula || '', carpeta: c => c.carpeta || c.prevista || '',
+  accion: c => c.accion || '', archivos: c => c.archivos, fuentes: c => (c.fuentes || []).join(',') };
+const COLS_ESCRITORIO = { numero: f => f.numero || '', designacion: f => f.designacion || '', origen: f => f.origen || '' };
+
 // Expedientes
 let allExps = [];
 async function loadExpedientes() {
@@ -1311,6 +1353,7 @@ async function loadExpedientes() {
   renderExps(allExps);
 }
 function renderExps(list) {
+  list = ordenarLista(list, ORDEN.exp, COLS_EXP);
   document.getElementById('expBody').innerHTML = list.map(c => `
     <tr class="fila-link" tabindex="0" data-caso="${esc(c.nombre)}" title="Buscar dentro de ${esc(c.nombre)}">
       <td title="${esc(c.nombre)}">${esc(c.nombre)}</td>
@@ -1337,10 +1380,12 @@ const PLACEHOLDER_BUSCAR = document.getElementById('buscarQ').placeholder;
 document.getElementById('buscarCaso').addEventListener('input', ev => {
   if (!ev.target.value.trim()) document.getElementById('buscarQ').placeholder = PLACEHOLDER_BUSCAR;
 });
-document.getElementById('expSearch').addEventListener('input', e => {
-  const q = e.target.value.toLowerCase();
+function filtrarExps() {
+  const q = document.getElementById('expSearch').value.toLowerCase();
   renderExps(allExps.filter(c => c.nombre.toLowerCase().includes(q)));
-});
+}
+document.getElementById('expSearch').addEventListener('input', filtrarExps);
+thOrden('expTable', 'exp', filtrarExps);
 
 // Cartera
 let cartera = [];
@@ -1358,8 +1403,9 @@ async function loadCartera() {
 function renderCartera() {
   const q = document.getElementById('carteraSearch').value.toLowerCase();
   const estado = document.getElementById('carteraEstado').value;
-  const lista = cartera.filter(c => (!estado || c.accion === estado)
-    && (!q || [c.expte, c.caratula, c.carpeta, c.prevista].some(v => (v || '').toLowerCase().includes(q))));
+  const lista = ordenarLista(cartera.filter(c => (!estado || c.accion === estado)
+    && (!q || [c.expte, c.caratula, c.carpeta, c.prevista].some(v => (v || '').toLowerCase().includes(q)))),
+    ORDEN.cartera, COLS_CARTERA);
   document.getElementById('carteraBody').innerHTML = lista.map(c => `<tr>
     <td class="mono">${esc(c.expte)}</td>
     <td title="${esc(c.caratula)}">${esc((c.caratula || '—').slice(0, 70))}</td>
@@ -1370,7 +1416,12 @@ function renderCartera() {
     <td class="cartera-acciones"><button class="btn" data-accion="editar" data-expte="${esc(c.expte)}">Editar</button> <button class="btn" data-accion="quitar" data-expte="${esc(c.expte)}">Quitar</button></td></tr>`).join('')
     || vacio(7, cartera.length ? 'Ninguna causa coincide con el filtro' : 'Tu cartera está vacía', cartera.length ? '' : 'Agregá tus causas con el formulario de arriba.');
 }
-document.getElementById('carteraSearch').addEventListener('input', renderCartera);
+let esperaCartera = null;
+document.getElementById('carteraSearch').addEventListener('input', () => {
+  clearTimeout(esperaCartera);
+  esperaCartera = setTimeout(renderCartera, 120);
+});
+thOrden('tablaCartera', 'cartera', renderCartera);
 
 const jsonPost = (metodo, cuerpo) => ({ method: metodo, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo) });
 function altaMensaje(texto, error) {
@@ -1422,10 +1473,10 @@ document.getElementById('escBtn').addEventListener('click', async () => {
     document.getElementById('escResultado').innerHTML = r.causas.length
       ? `<div class="card-sub">${fmt(r.revisados)} archivos revisados${r.truncado ? ' (se cortó en el límite)' : ''}${r.textos_sin_leer ? ` · el texto se leyó solo en los primeros ${fmt(r.max_textos)}: ${fmt(r.textos_sin_leer)} archivos se miraron solo por el nombre (escaneá subcarpetas por separado para leerlos)` : ''} · ${r.causas.length} expedientes · ${nuevas} nuevos</div>
          <div class="table-wrap"><table class="data-table"><thead><tr><th></th><th>Expediente</th><th>Archivos</th><th>Hallado en</th><th>Carátula</th><th>Ejemplo</th></tr></thead><tbody>`
-        + r.causas.map((c, i) => `<tr><td><input type="checkbox" class="esc-sel" data-i="${i}" ${c.en_cartera ? 'disabled' : 'checked'}></td>
+        + r.causas.map((c, i) => `<tr><td><input type="checkbox" class="esc-sel" aria-label="Agregar ${esc(c.expte)}" data-i="${i}" ${c.en_cartera ? 'disabled' : 'checked'}></td>
             <td class="mono">${esc(c.expte)}${c.en_cartera ? ' <span style="color:var(--ink-muted)">(ya cargada)</span>' : ''}</td>
             <td>${fmt(c.archivos)}</td><td>${esc(c.origen)}</td>
-            <td><input class="search-input esc-car" data-i="${i}" value="${esc(c.caratula || '')}" placeholder="opcional" ${c.en_cartera ? 'disabled' : ''}></td>
+            <td><input class="search-input esc-car" aria-label="Carátula de ${esc(c.expte)}" data-i="${i}" value="${esc(c.caratula || '')}" placeholder="opcional" ${c.en_cartera ? 'disabled' : ''}></td>
             <td title="${esc(c.ejemplos.join(' | '))}">${esc(c.ejemplos[0] || '')}</td></tr>`).join('')
         + `</tbody></table></div><div class="search-bar" style="margin-top:8px"><button class="btn btn-primary" id="escAgregar">Agregar las seleccionadas</button></div>`
       : '<div class="card-sub">No se encontró ningún número de expediente. Probá con otras fuentes o con un patrón propio.</div>';
@@ -1484,15 +1535,23 @@ function renderFuera() {
       <td style="white-space:nowrap"><button class="btn fuera-mia" data-c="${esc(f.carpeta)}">Es mía</button>
         <button class="btn fuera-ajena" data-c="${esc(f.carpeta)}">Ajena</button></td></tr>`;
   }).join('') || '<tr><td colspan="5" style="color:var(--ink-muted)">Todas las carpetas están en tu cartera</td></tr>';
+  const paginaCartera = document.getElementById('page-cartera');
   document.querySelectorAll('.fuera-mia').forEach(b => b.addEventListener('click', async () => {
-    await api('/api/fuera/mia', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ carpeta: b.dataset.c }) });
-    fuera = fuera.filter(f => f.carpeta !== b.dataset.c); renderFuera();
+    try {
+      await api('/api/fuera/mia', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ carpeta: b.dataset.c }) });
+      fuera = fuera.filter(f => f.carpeta !== b.dataset.c); renderFuera();
+    } catch (err) { mostrarError(paginaCartera, err); }
   }));
   document.querySelectorAll('.fuera-ajena').forEach(b => b.addEventListener('click', async () => {
     b.disabled = true; b.textContent = 'Armando...';
-    const r = await api('/api/fuera/ajena', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ carpeta: b.dataset.c }) });
-    document.querySelector('.nav-item[data-page="tandas"]').click();
-    await abrirPropuesta(r.csv);
+    try {
+      const r = await api('/api/fuera/ajena', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ carpeta: b.dataset.c }) });
+      document.querySelector('.nav-item[data-page="tandas"]').click();
+      await abrirPropuesta(r.csv);
+    } catch (err) {
+      b.disabled = false; b.textContent = 'Ajena';
+      mostrarError(paginaCartera, err);
+    }
   }));
 }
 document.getElementById('fueraClase').addEventListener('change', renderFuera);
@@ -1512,8 +1571,10 @@ async function loadEscritorio() {
 function renderEscritorio() {
   const q = document.getElementById('escritorioSearch').value.toLowerCase();
   const soloFaltan = document.getElementById('escritorioFaltan').checked;
-  document.getElementById('escritorioBody').innerHTML = escritorio
-    .filter(f => (!soloFaltan || !f.en_cartera) && (!q || [f.numero, f.designacion, f.origen].some(v => (v || '').toLowerCase().includes(q))))
+  const lista = ordenarLista(escritorio
+    .filter(f => (!soloFaltan || !f.en_cartera) && (!q || [f.numero, f.designacion, f.origen].some(v => (v || '').toLowerCase().includes(q)))),
+    ORDEN.escritorio, COLS_ESCRITORIO);
+  document.getElementById('escritorioBody').innerHTML = lista
     .map(f => `<tr${f.en_cartera ? '' : ' style="background:var(--warn-wash)"'}>
       <td class="mono">${esc(f.numero)}</td><td title="${esc(f.designacion)}">${esc((f.designacion || '').slice(0, 80))}</td>
       <td>${esc(f.origen || '—')}</td><td>${f.en_cartera ? '✓' : '<span class="tag tag-match">Falta</span>'}</td></tr>`).join('')
@@ -1522,6 +1583,7 @@ function renderEscritorio() {
 }
 document.getElementById('escritorioSearch').addEventListener('input', renderEscritorio);
 document.getElementById('escritorioFaltan').addEventListener('change', renderEscritorio);
+thOrden('tablaEscritorio', 'escritorio', renderEscritorio);
 
 // Tandas
 let prop = null;          // propuesta abierta: {nombre, base, filas}
@@ -1531,7 +1593,7 @@ async function loadTandas() {
   document.getElementById('propuestasBody').innerHTML = lista.map(p => `<tr>
     <td>${esc(p.nombre)}</td><td>${esc(p.fecha.replace('T', ' '))}</td><td>${fmt(p.filas)}</td>
     <td>${fmt(p.a_mover)}</td><td>${fmt(p.pendientes)}</td>
-    <td><button class="btn abrir-prop" data-n="${esc(p.nombre)}"${p.pendientes ? '' : ' disabled'}>Revisar</button></td></tr>`).join('')
+    <td><button class="btn abrir-prop" data-n="${esc(p.nombre)}"${p.disponibles ? '' : ' disabled'}>Revisar</button></td></tr>`).join('')
     || vacio(6, 'Sin propuestas', 'Simulá una carpeta o soltá archivos para armar la primera.');
   document.querySelectorAll('.abrir-prop').forEach(b => b.addEventListener('click', () =>
     abrirPropuesta(b.dataset.n).catch(err => mostrarError(document.getElementById('revision'), err))));
@@ -1576,6 +1638,17 @@ function aplicarCriterios() {
   renderRevision();
 }
 
+// Cada cambio redibuja la tabla entera: se guarda y se devuelve el foco (y el desplazamiento) para poder operar con teclado.
+const CLASES_REV = ['fila-check', 'grupo-check', 'fila-destino', 'grupo-destino', 'motivo-toggle'];
+function foco(raiz) {
+  const a = document.activeElement;
+  if (!a || !raiz.contains(a)) return null;
+  const clase = CLASES_REV.find(c => a.classList.contains(c));
+  return a.id ? { sel: '#' + a.id } : clase ? { sel: `.${clase}` + ['i', 'g', 'm'].filter(k => a.dataset[k] != null).map(k => `[data-${k}="${a.dataset[k]}"]`).join('') } : null;
+}
+function restaurarFoco(raiz, f) {
+  try { if (f) raiz.querySelector(f.sel)?.focus({ preventScroll: true }); } catch { /* selector no valido: se pierde solo el foco */ }
+}
 function renderRevision() {
   const el = document.getElementById('revision');
   const conf = document.getElementById('revConf')?.value || '';
@@ -1585,6 +1658,8 @@ function renderRevision() {
   const orden = Object.entries(grupos).sort((a, b) => b[1].length - a[1].length);
   const marcados = prop.filas.filter(f => f.existe && f.marcado).length;
   const motivos = [...new Set(pendientes.map(f => f.motivo))];
+  const enfocado = foco(el);
+  const desplazamiento = el.querySelector('.table-wrap')?.scrollTop || 0;
 
   el.innerHTML = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
@@ -1592,7 +1667,7 @@ function renderRevision() {
         <div class="card-sub">${fmt(pendientes.length)} pendientes en ${fmt(orden.length)} destinos · <b>${fmt(marcados)} marcados para mover</b> · criterios aplicados</div>
         ${prop.vieja ? `<div class="card-sub" style="color:var(--warn)">Propuesta del ${esc(prop.fecha.replace('T', ' '))}: se simuló con reglas anteriores. Conviene volver a simular la carpeta antes de mover.</div>` : ''}</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <select class="search-input" id="revConf" style="max-width:170px">
+        <select class="search-input" id="revConf" aria-label="Filtrar por confianza" style="max-width:170px">
           <option value="">Toda confianza</option><option value="alta">Solo alta</option><option value="media">Solo media</option><option value="baja">Solo baja</option>
         </select>
         <button class="btn" id="btnCriterios" title="Desmarca coincidencias por nombre de carpeta, expedientes nuevos, confianza baja, despachos de Cámara y repositorios">Aplicar criterios</button>
@@ -1609,18 +1684,21 @@ function renderRevision() {
       <th style="width:30px"></th><th>Archivo</th><th>Motivo</th><th>Confianza</th><th>Destino</th>
     </tr></thead><tbody>${orden.map(([destino, fs], g) => `
       <tr style="background:var(--accent-wash)">
-        <td><input type="checkbox" class="grupo-check" data-g="${g}" ${fs.every(f => f.marcado) ? 'checked' : ''}></td>
+        <td><input type="checkbox" class="grupo-check" aria-label="Marcar el grupo ${esc(destino)}" data-g="${g}" ${fs.every(f => f.marcado) ? 'checked' : ''}></td>
         <td colspan="3"><b>${esc(destino)}</b> <span style="color:var(--ink-muted)">(${fs.length})</span></td>
-        <td><input class="search-input grupo-destino" data-g="${g}" list="carpetasList" placeholder="Cambiar destino del grupo..." style="padding:4px 8px;font-size:0.75rem"></td>
+        <td><input class="search-input grupo-destino" aria-label="Cambiar destino del grupo ${esc(destino)}" data-g="${g}" list="carpetasList" placeholder="Cambiar destino del grupo..." style="padding:4px 8px;font-size:0.75rem"></td>
       </tr>` + fs.map(f => `
       <tr>
-        <td><input type="checkbox" class="fila-check" data-i="${f.i}" ${f.marcado ? 'checked' : ''}></td>
+        <td><input type="checkbox" class="fila-check" aria-label="Mover ${esc(f.nombre)}" data-i="${f.i}" ${f.marcado ? 'checked' : ''}></td>
         <td title="${esc(f.archivo)}">${esc(f.nombre)}${f.extracto ? `<div style="color:var(--ink-muted);font-size:var(--fs-xs);max-width:420px;white-space:normal">${esc(f.extracto)}</div>` : ''}</td>
         <td>${tagMotivo(f.motivo)} <span style="color:var(--ink-muted)">${esc((f.detalle || '').slice(0, 40))}</span></td>
         <td>${esc(f.confianza)}</td>
-        <td><input class="search-input fila-destino" data-i="${f.i}" list="carpetasList" value="${esc(f.destino_rel)}" style="padding:4px 8px;font-size:0.75rem"></td>
+        <td><input class="search-input fila-destino" aria-label="Destino de ${esc(f.nombre)}" data-i="${f.i}" list="carpetasList" value="${esc(f.destino_rel)}" style="padding:4px 8px;font-size:0.75rem"></td>
       </tr>`).join('')).join('')}</tbody></table></div></div>`;
 
+  const tablaRev = el.querySelector('.table-wrap');
+  if (tablaRev) tablaRev.scrollTop = desplazamiento;
+  restaurarFoco(el, enfocado);
   document.getElementById('revConf').value = conf;
   document.getElementById('revConf').addEventListener('change', renderRevision);
   document.getElementById('btnCriterios').addEventListener('click', aplicarCriterios);
@@ -1650,9 +1728,8 @@ function renderRevision() {
     aplicarPropuesta().catch(err => mostrarError(document.getElementById('aplicarEstado'), err)));
 }
 
-function destinoAbsoluto(rel) {
-  return /^[A-Za-z]:[\\/]/.test(rel) ? rel : prop.base.replace(/[\\/]$/, '') + '\\' + rel.replace(/\//g, '\\');
-}
+// El destino se manda relativo, tal como se muestra, y lo resuelve el servidor: armarlo aca con la barra de
+// Windows rompia "Mover" en otros sistemas (HTTP 400).
 
 async function aplicarPropuesta() {
   const sel = prop.filas.filter(f => f.existe && f.marcado);
@@ -1660,7 +1737,7 @@ async function aplicarPropuesta() {
   const destinos = new Set(sel.map(f => f.destino_rel)).size;
   if (!confirm(`¿Mover ${sel.length} archivos a ${destinos} destinos?\n\nQueda en el historial y se puede deshacer.`)) return;
   const filas = prop.filas.map(f => ({
-    archivo: f.archivo, destino: destinoAbsoluto(f.destino_rel), motivo: f.motivo, detalle: f.detalle,
+    archivo: f.archivo, destino: f.destino_rel, motivo: f.motivo, detalle: f.detalle,
     confianza: f.confianza, accion: f.existe && f.marcado ? 'mover' : 'queda',
   }));
   const boton = document.getElementById('btnAplicar');
@@ -1690,7 +1767,7 @@ inputSoltar.addEventListener('change', () => { subirArchivos([...inputSoltar.fil
 
 async function subirArchivos(files) {
   const el = document.getElementById('soltarEstado');
-  files = files.filter(f => f.size > 0 || f.type);
+  files = files.filter(f => f.size > 0);
   if (!files.length) { el.textContent = 'No hay archivos (las carpetas no se pueden soltar: abrila y seleccioná sus archivos).'; return; }
   const fd = new FormData();
   files.forEach(f => fd.append('archivos', f, f.name));
@@ -1728,7 +1805,8 @@ async function loadHistorial() {
   </tr>`).join('') || vacio(7, q ? 'Nada coincide con el filtro' : 'Todavía no hay movimientos', q ? '' : 'Cada tanda que muevas desde Tandas queda registrada acá.');
   document.getElementById('carpetasBody').innerHTML = h.carpetas.map(c => `<tr>
     <td>${esc((c.fecha || '').replace('T', ' ').slice(0, 16))}</td><td>${esc(c.accion)}</td><td>${esc(c.origen || '—')}</td><td>${esc(c.destino)}</td></tr>`).join('') || vacio(4, 'Sin carpetas creadas ni renombradas');
-  document.querySelectorAll('.ver-tanda').forEach(b => b.addEventListener('click', () => verTanda(b.dataset.a, b.dataset.b)));
+  document.querySelectorAll('.ver-tanda').forEach(b => b.addEventListener('click', () =>
+    verTanda(b.dataset.a, b.dataset.b).catch(err => mostrarError(document.getElementById('historialEstado'), err))));
   document.querySelectorAll('.deshacer-tanda').forEach(b => b.addEventListener('click', () => deshacerTanda(b)));
 }
 async function verTanda(a, b) {
@@ -1776,9 +1854,9 @@ document.getElementById('btnRegenerarAlias').addEventListener('click', async () 
 function renderAliases(aliases) {
   document.getElementById('aliasEditor').innerHTML = aliases.map((a, i) => `
     <div class="alias-row">
-      <input value="${esc(a.pattern)}" placeholder="regex..." data-field="pattern">
-      <input value="${esc(a.caso)}" placeholder="carpeta-causa..." data-field="caso">
-      <button class="alias-del" data-i="${i}" title="Eliminar">×</button>
+      <input value="${esc(a.pattern)}" placeholder="regex..." aria-label="Expresión del alias ${i + 1}" data-field="pattern">
+      <input value="${esc(a.caso)}" placeholder="carpeta-causa..." aria-label="Carpeta del alias ${i + 1}" data-field="caso">
+      <button class="alias-del" data-i="${i}" title="Eliminar" aria-label="Eliminar el alias ${i + 1}">×</button>
     </div>`).join('');
   document.querySelectorAll('.alias-del').forEach(b => b.addEventListener('click', () => {
     const data = getAliasData(false);
@@ -1800,7 +1878,9 @@ document.getElementById('btnAddAlias').addEventListener('click', () => {
 });
 document.getElementById('btnSaveAliases').addEventListener('click', async () => {
   const page = document.getElementById('page-aliases');
+  const btn = document.getElementById('btnSaveAliases');
   page.querySelectorAll('.error-box').forEach(c => c.remove());
+  btn.disabled = true;
   try {
     const res = await api('/api/aliases', {
       method: 'POST',
@@ -1808,9 +1888,10 @@ document.getElementById('btnSaveAliases').addEventListener('click', async () => 
       body: JSON.stringify(getAliasData()),
     });
     alert(`Aliases guardados (${res.count})`);
+    await loadAliases();          // recarga editor y tabla desde el servidor
   } catch (err) {
-    mostrarError(page, err);
-  }
+    mostrarError(page, err);      // el editor queda intacto: no se pierden las ediciones
+  } finally { btn.disabled = false; }
 });
 
 function iniciales(nombre) {
@@ -1870,6 +1951,8 @@ document.getElementById('ocrInstalar').addEventListener('click', async ev => {
 });
 async function cargarConfig() {
   configActual = await api('/api/config');
+  const origen = document.getElementById('simOrigen');
+  if (!origen.value && configActual.inbox) origen.value = configActual.inbox;
   const nombre = configActual.estudio;
   document.title = nombre ? `Organizador — ${nombre}` : 'Organizador';
   document.getElementById('logoMark').textContent = iniciales(nombre);

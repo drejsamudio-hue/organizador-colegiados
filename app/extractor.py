@@ -14,7 +14,9 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
-logging.disable(logging.WARNING)
+# Solo el ruido de PyMuPDF: logging.disable apagaria los warnings de todo el proceso (Flask incluido).
+logging.getLogger("fitz").setLevel(logging.ERROR)
+logging.getLogger("pymupdf").setLevel(logging.ERROR)
 
 PAGS_INICIO = 6
 PAGS_FINAL = 1
@@ -133,9 +135,12 @@ def _extraer_doc(path: Path, max_chars: int) -> tuple[str | None, str | None]:
         return None, "ERROR_DOC_temporal_de_word"
     try:
         with path.open("rb") as f:
-            cabecera = f.read(512).lstrip().lower()
+            cruda = f.read(512)
     except OSError as exc:
         return None, f"ERROR_LECTURA: {exc}"
+    if not cruda:
+        return None, "ERROR_DOC_vacio"
+    cabecera = cruda.lstrip().lower()
     if cabecera.startswith((b"<html", b"<!doctype html", b"<?xml")):
         return _extraer_html(path, max_chars)
     if cabecera.startswith(b"pk\x03\x04"):
@@ -203,9 +208,11 @@ def ocr_disponible() -> bool:
     return (TESSDATA / "spa.traineddata").is_file()
 
 
-def _clave_ocr(path: Path) -> str:
+def _clave_ocr(path: Path, paginas: int = OCR_PAGINAS) -> str:
+    """Entran la ruta completa (dos 'sentencia.pdf' iguales en tamano y fecha no comparten cache) y las paginas
+    pedidas (la muestra corta y la lectura larga son caches distintas)."""
     st = path.stat()
-    return hashlib.sha1(f"{path.name}|{st.st_size}|{int(st.st_mtime)}|{OCR_DPI}|{OCR_PAGINAS}".encode()).hexdigest()
+    return hashlib.sha1(f"{path.resolve()}|{st.st_size}|{int(st.st_mtime)}|{OCR_DPI}|{paginas}".encode()).hexdigest()
 
 
 def calidad_texto(texto: str) -> float:
@@ -220,7 +227,7 @@ def ocr_pdf(path: Path, paginas: int = OCR_PAGINAS) -> str | None:
     if not ocr_disponible():
         return None
     try:
-        cache = OCR_CACHE / f"{_clave_ocr(path)}.txt"
+        cache = OCR_CACHE / f"{_clave_ocr(path, paginas)}.txt"
         if cache.is_file():
             return cache.read_text(encoding="utf-8")
         with fitz.open(str(path)) as doc:

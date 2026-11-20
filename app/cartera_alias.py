@@ -1,6 +1,7 @@
 """Alias por apellido del actor para las causas de la cartera."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from cartera import Causa
@@ -41,7 +42,7 @@ def aliases_desde_cartera(causas: list[Causa], casos_dir: Path) -> tuple[list[di
             ambiguos.append(ap)
             continue
         aliases.append({
-            "pattern": rf"(?<![a-z]){ap}(?![a-z])",
+            "pattern": rf"(?<![a-z]){re.escape(ap)}(?![a-z])",
             "caso": principal,
             "expte": c.expte.clave,
             "origen": "cartera",

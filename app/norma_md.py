@@ -35,8 +35,10 @@ def a_markdown_norma(texto: str, titulo: str, id_norma: str) -> str:
     return "\n".join(partes).rstrip() + "\n"
 
 
-def convertir_norma(pdf: Path, destino: Path, id_norma: str, prefijo: str = "ley") -> dict:
-    texto = fallo_md.texto_completo(pdf)
+def convertir_norma(pdf: Path, destino: Path, id_norma: str, prefijo: str = "ley", texto: str | None = None) -> dict:
+    """`texto`: el texto ya extraido del PDF, para no volver a leerlo (y a hacerle OCR) si el llamador ya lo tiene."""
+    if texto is None:
+        texto = fallo_md.texto_completo(pdf)
     md = a_markdown_norma(texto, pdf.stem, id_norma)
     destino.mkdir(parents=True, exist_ok=True)
     ruta = destino / f"{prefijo}-{id_norma}.md"

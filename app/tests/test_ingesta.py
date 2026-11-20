@@ -290,11 +290,11 @@ def test_aplicar_csv_mueve_solo_lo_aprobado_sin_reclasificar(entorno, tmp_path, 
     origen.mkdir()
     a, b, c = (escribir(origen, n, CUERPO) for n in ("a.txt", "b.txt", "c.txt"))
     destino = entorno / "01_Expedientes" / "2023-vidal-luna" / "00_escritos_propios"
-    filas = [["archivo", "destino", "motivo", "detalle", "confianza", "accion"],
-             [a, destino, "cartera", "manual", "media", "mover"],
-             [b, destino, "cartera", "", "media", "queda"],
-             [origen / "ya-no-esta.txt", destino, "cartera", "", "media", "mover"],
-             [c, tmp_path / "fuera-de-la-base", "cartera", "", "media", "mover"]]
+    filas = [["archivo", "destino", "motivo", "detalle", "confianza", "accion", "hash"],
+             [a, destino, "cartera", "manual", "media", "mover", I.hash_archivo(a)],
+             [b, destino, "cartera", "", "media", "queda", ""],
+             [origen / "ya-no-esta.txt", destino, "cartera", "", "media", "mover", ""],
+             [c, tmp_path / "fuera-de-la-base", "cartera", "", "media", "mover", ""]]
     csv_ok = tmp_path / "aprobado.csv"
     with csv_ok.open("w", newline="", encoding="cp1252") as f:
         csv.writer(f, delimiter=";").writerows(filas)  # como lo guarda Excel en castellano
@@ -336,8 +336,8 @@ def test_aplicar_registra_la_tanda_y_deshacer_la_revierte(entorno, tmp_path):
     origen.mkdir()
     a, b = escribir(origen, "a.txt", CUERPO), escribir(origen, "b.txt", CUERPO)
     dst = entorno / "01_Expedientes" / "2023-vidal-luna" / "01_siged"
-    r = I.aplicar_filas([{"archivo": str(a), "destino": str(dst), "accion": "mover"},
-                         {"archivo": str(b), "destino": str(dst), "accion": "mover"}], "prueba.csv")
+    r = I.aplicar_filas([{"archivo": str(a), "destino": str(dst), "accion": "mover", "hash": I.hash_archivo(a)},
+                         {"archivo": str(b), "destino": str(dst), "accion": "mover", "hash": I.hash_archivo(b)}], "prueba.csv")
     assert (r["movidos"], r["tanda"]) == (2, "t0001")
     t = I.leer_tandas()[0]
     assert (t["origen"], t["primera_fila"], t["ultima_fila"]) == ("prueba.csv", "0", "1")
@@ -393,7 +393,7 @@ def test_aplicar_puede_renombrar_y_deshacer_restaura_el_nombre(entorno, tmp_path
     a = escribir(origen, "fallo (12).pdf.txt", CUERPO)
     dst = entorno / "02_Jurisprudencia" / "consumo" / "dano-punitivo"
     r = I.aplicar_filas([{"archivo": str(a), "destino": str(dst), "accion": "mover",
-                          "nombre_nuevo": "2023-03-12_STJ_perez-gomez"}], "x")
+                          "nombre_nuevo": "2023-03-12_STJ_perez-gomez", "hash": I.hash_archivo(a)}], "x")
     assert r["movidos"] == 1 and (dst / "2023-03-12_STJ_perez-gomez.txt").exists()
     I.deshacer_filas(0, 0)
     assert a.exists()
@@ -433,7 +433,8 @@ def test_aplicar_filas_publica_y_reindexa_una_vez(entorno, tmp_path, monkeypatch
     rebuilds = []
     monkeypatch.setattr(I.kb_publicar, "publicar", lambda p, m, d, *x: p)
     monkeypatch.setattr(I.kb_index, "rebuild", lambda *x: rebuilds.append(x))
-    filas = [{"archivo": str(f), "destino": str(dst), "accion": "mover", "motivo": "jurisprudencia"} for f in (a, b)]
+    filas = [{"archivo": str(f), "destino": str(dst), "accion": "mover", "motivo": "jurisprudencia",
+              "hash": I.hash_archivo(f)} for f in (a, b)]
     r = I.aplicar_filas(filas, "t")
     assert r["publicados"] == 2 and len(rebuilds) == 1
 
@@ -540,7 +541,7 @@ def test_aplicar_respalda_el_historial_antes_de_mover(entorno, tmp_path):
     b = tmp_path / "b.txt"
     b.write_text("y", encoding="utf-8")
     I.aplicar_filas([{"archivo": str(b), "destino": str(entorno / "01_Expedientes" / "2022-perez-gomez"),
-                      "accion": "mover"}], "t")
+                      "accion": "mover", "hash": I.hash_archivo(b)}], "t")
     (copia,) = list((entorno / "_SISTEMA" / "_respaldos").glob("INGESTA_RUTEO.csv.*.bak"))
     assert copia.read_text(encoding="utf-8") == antes
 
@@ -573,7 +574,8 @@ def _filas_mover(base, nombres, destino):
     for n in nombres:
         f = base / "_INBOX" / n
         f.write_text(n, encoding="utf-8")
-        filas.append({"archivo": str(f), "destino": str(destino), "motivo": "prueba", "detalle": "", "accion": "mover"})
+        filas.append({"archivo": str(f), "destino": str(destino), "motivo": "prueba", "detalle": "", "accion": "mover",
+                      "hash": I.hash_archivo(f)})
     return filas
 
 
@@ -606,7 +608,8 @@ def test_una_fila_que_ya_estaba_en_su_carpeta_no_corre_el_rango_de_la_tanda(ento
     destino = entorno / "01_Expedientes/2022-perez-gomez"
     quieto = destino / "quieto.txt"
     quieto.write_text("x", encoding="utf-8")
-    filas = [{"archivo": str(quieto), "destino": str(destino), "accion": "mover"}] + _filas_mover(entorno, ["m.txt"], destino)
+    filas = [{"archivo": str(quieto), "destino": str(destino), "accion": "mover", "hash": I.hash_archivo(quieto)}] \
+        + _filas_mover(entorno, ["m.txt"], destino)
     r = I.aplicar_filas(filas, "C")
     assert r["movidos"] == 1
     t = I.leer_tandas()[0]
@@ -617,9 +620,9 @@ def test_con_el_registro_tomado_aplicar_avisa_y_no_mueve(entorno, monkeypatch):
     monkeypatch.setattr(I, "ESPERA_BLOQUEO", 0.3)
     filas = _filas_mover(entorno, ["x.txt"], entorno / "01_Expedientes/2022-perez-gomez")
     with I._bloqueo():
-        r = I.aplicar_filas(filas, "D")
-    assert r["movidos"] == 0 and "en curso" in r["avisos"][0]
-    assert (entorno / "_INBOX/x.txt").is_file()
+        with pytest.raises(I.TandaEnCurso, match="otra tanda.*en curso"):
+            I.aplicar_filas(filas, "D")
+    assert (entorno / "_INBOX/x.txt").is_file() and I.leer_ruteo() == []
 
 
 def test_deshacer_saltea_un_archivo_que_cambio_desde_que_se_movio(entorno):
@@ -1058,9 +1061,9 @@ def test_deshacer_no_actua_si_el_registro_se_edito_desde_la_tanda(entorno, tmp_p
         x = tmp_path / n
         x.write_text(n, encoding="utf-8")
     I.aplicar_filas([{"archivo": str(tmp_path / "a.txt"), "destino": str(entorno / "01_Expedientes" / "2022-perez-gomez"),
-                      "accion": "mover"}], "t1")
+                      "accion": "mover", "hash": I.hash_archivo(tmp_path / "a.txt")}], "t1")
     I.aplicar_filas([{"archivo": str(tmp_path / "b.txt"), "destino": str(entorno / "01_Expedientes" / "2023-vidal-luna"),
-                      "accion": "mover"}], "t2")
+                      "accion": "mover", "hash": I.hash_archivo(tmp_path / "b.txt")}], "t2")
     filas = I.leer_ruteo()
     with I.RUTEO_CSV.open("w", newline="", encoding="utf-8") as f:  # se borro la primera fila en Excel
         w = csv.DictWriter(f, fieldnames=I.COLUMNAS_RUTEO)
@@ -1075,7 +1078,7 @@ def test_reubicar_carpeta_mantiene_deshacer_de_tandas_viejas(entorno, tmp_path):
     a = tmp_path / "a.txt"
     a.write_text("x", encoding="utf-8")
     I.aplicar_filas([{"archivo": str(a), "destino": str(entorno / "01_Expedientes" / "2022-perez-gomez"),
-                      "accion": "mover"}], "t1")
+                      "accion": "mover", "hash": I.hash_archivo(a)}], "t1")
     vieja, nueva = entorno / "01_Expedientes" / "2022-perez-gomez", entorno / "01_Expedientes" / "2022-perez-gomez-cobro"
     vieja.rename(nueva)
     assert I.reubicar_carpeta(vieja, nueva) == 1
@@ -1088,8 +1091,10 @@ def test_aplicar_con_destino_que_sale_de_la_base_no_corta_la_tanda(entorno, tmp_
     a.write_text("x", encoding="utf-8")
     b.write_text("y", encoding="utf-8")
     r = I.aplicar_filas([
-        {"archivo": str(a), "destino": str(entorno / "01_Expedientes" / "2022-perez-gomez"), "accion": "mover"},
-        {"archivo": str(b), "destino": str(entorno / "01_Expedientes" / ".." / ".." / "fuera"), "accion": "Mover"}], "t")
+        {"archivo": str(a), "destino": str(entorno / "01_Expedientes" / "2022-perez-gomez"), "accion": "mover",
+         "hash": I.hash_archivo(a)},
+        {"archivo": str(b), "destino": str(entorno / "01_Expedientes" / ".." / ".." / "fuera"), "accion": "Mover",
+         "hash": I.hash_archivo(b)}], "t")
     assert r["movidos"] == 1 and r["tanda"] and b.is_file()
     assert any("fuera" in x for x in r["avisos"])
 
@@ -1113,7 +1118,8 @@ def test_aplicar_avisa_cuando_el_nombre_estaba_ocupado(entorno, tmp_path):
     (carpeta / "a.txt").write_text("viejo", encoding="utf-8")
     nuevo = tmp_path / "a.txt"
     nuevo.write_text("nuevo", encoding="utf-8")
-    r = I.aplicar_filas([{"archivo": str(nuevo), "destino": str(carpeta), "accion": "mover"}], "t")
+    r = I.aplicar_filas([{"archivo": str(nuevo), "destino": str(carpeta), "accion": "mover",
+                          "hash": I.hash_archivo(nuevo)}], "t")
     assert r["movidos"] == 1 and (carpeta / "a.txt").read_text(encoding="utf-8") == "viejo"
     assert any("quedo como a__1.txt" in x for x in r["avisos"])
 
@@ -1122,7 +1128,7 @@ def test_tandas_editadas_a_mano_con_numeros_rotos_se_ignoran(entorno, tmp_path):
     a = tmp_path / "a.txt"
     a.write_text("x", encoding="utf-8")
     I.aplicar_filas([{"archivo": str(a), "destino": str(entorno / "01_Expedientes" / "2022-perez-gomez"),
-                      "accion": "mover"}], "t")
+                      "accion": "mover", "hash": I.hash_archivo(a)}], "t")
     with I.TANDAS_CSV.open("a", encoding="utf-8", newline="") as f:
         f.write("t0002,2026-01-01,a mano,1,cero,uno,\n")
     assert [t["id"] for t in I.leer_tandas()] == ["t0001"]

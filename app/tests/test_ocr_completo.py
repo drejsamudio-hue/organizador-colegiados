@@ -293,3 +293,23 @@ def test_por_defecto_solo_guarda_el_texto(tmp_path):
     assert r["estado"] == "ok" and r["pdf"] is None
     assert [p.name for p in (tmp_path / "ocr" / r["hash"]).iterdir()] == [O.TXT]
     assert "prescripción" in O.texto_guardado(tmp_path / "ocr" / r["hash"])
+
+
+def test_la_consola_avisa_si_quedan_pdf_sin_ocr_por_falta_de_idioma(tmp_path, monkeypatch, capsys):
+    entrada = tmp_path / "in"
+    entrada.mkdir()
+    pdf_escaneado(entrada / "esc.pdf")
+    monkeypatch.setattr(O, "ocr_disponible", lambda: False)
+    monkeypatch.setattr("sys.argv", ["ocr_completo.py", str(entrada)])
+    O.main()
+    salida = capsys.readouterr().out
+    assert "sin_ocr: 1" in salida and "[AVISO]" in salida and "spa.traineddata" in salida
+
+
+def test_la_consola_no_avisa_si_no_hay_pdf_sin_ocr(tmp_path, monkeypatch, capsys):
+    entrada = tmp_path / "in"
+    entrada.mkdir()
+    pdf_con_texto(entrada / "a.pdf")
+    monkeypatch.setattr("sys.argv", ["ocr_completo.py", str(entrada)])
+    O.main()
+    assert "[AVISO]" not in capsys.readouterr().out

@@ -16,7 +16,7 @@ from pathlib import Path
 import fitz
 
 sys.path.insert(0, str(Path(__file__).parent))
-from extractor import extraer_universal, ocr_pdf  # noqa: E402
+from extractor import _ocr_completo_guardado, extraer_universal, ocr_pdf  # noqa: E402
 from fallos import ficha_dict  # noqa: E402
 
 SECCIONES = [
@@ -24,6 +24,7 @@ SECCIONES = [
     ("Considerando", re.compile(r"^\s*(?:y\s+)?considerando\b[:.\s]?|^\s*resulta\b[:.\s]", re.I)),
     ("Resuelve", re.compile(r"^\s*(?:por\s+(?:ello|todo\s+lo\s+expuesto)|se\s+resuelve|r\s?e\s?s\s?u\s?e\s?l\s?v\s?e|fall[ao]\s*:)", re.I)),
 ]
+MAX_CHARS_PDF_COMPLETO = 2_000_000
 RE_PAGINA = re.compile(r"^\s*(?:p[aá]g(?:ina)?\.?\s*)?\d{1,4}\s*(?:de\s*\d{1,4})?\s*$", re.I)
 
 
@@ -32,11 +33,19 @@ def texto_completo(path: Path) -> str:
     if path.suffix.lower() == ".pdf":
         try:
             with fitz.open(str(path)) as doc:
-                texto = "\n".join(p.get_text() for p in doc)
+                partes, total = [], 0
+                for p in doc:
+                    t = p.get_text()
+                    partes.append(t)
+                    total += len(t)
+                    if total >= MAX_CHARS_PDF_COMPLETO:  # un digesto de miles de paginas no se carga entero en memoria
+                        break
+                texto = "\n".join(partes)
         except Exception:  # noqa: BLE001
             texto = ""
         if len(texto.strip()) < 100:
-            texto = ocr_pdf(path, paginas=50) or ""
+            # primero el OCR completo por hash (todas las paginas); la muestra corta solo si no existe
+            texto = _ocr_completo_guardado(path) or ocr_pdf(path, paginas=50) or ""
         return texto
     texto, _ = extraer_universal(path, max_chars=2_000_000)
     return texto or ""
@@ -44,7 +53,8 @@ def texto_completo(path: Path) -> str:
 
 def limpiar(texto: str) -> str:
     lineas = [l.rstrip() for l in texto.replace("\r", "").split("\n")]
-    repetidas = {l for l, n in Counter(l.strip() for l in lineas if 4 <= len(l.strip()) <= 120).items() if n >= 3}
+    repetidas = {l for l, n in Counter(l.strip() for l in lineas if 4 <= len(l.strip()) <= 120).items()
+                 if n >= 3 and not any(rx.match(l) for _, rx in SECCIONES)}  # "VISTOS:" por pagina sigue siendo una seccion
     out = []
     for l in lineas:
         s = l.strip()
@@ -90,12 +100,13 @@ def compactar(md: str, encabezado: int = 2500, final: int = 8000) -> str:
 
 def huella(md: str) -> str:
     cuerpo = md.split("\n", 1)[-1]
-    return hashlib.sha1(re.sub(r"\W+", "", cuerpo.lower()).encode()).hexdigest()
+    return hashlib.sha256(re.sub(r"\W+", "", cuerpo.lower()).encode()).hexdigest()
 
 
 def convertir(entradas: list[Path], salida: Path, sin_duplicados: bool = True, compacto: bool = False) -> dict:
     salida.mkdir(parents=True, exist_ok=True)
     vistos: dict[str, str] = {}
+    usados: set[str] = set()
     res = {"convertidos": 0, "duplicados": 0, "chars_antes": 0, "chars_despues": 0}
     archivos = [p for e in entradas for p in ([e] if e.is_file() else sorted(e.rglob("*"))) if p.is_file()]
     for p in archivos:
@@ -106,10 +117,14 @@ def convertir(entradas: list[Path], salida: Path, sin_duplicados: bool = True, c
             res["duplicados"] += 1
             continue
         vistos[h] = p.name
-        (salida / f"{p.stem}.md").write_text(md, encoding="utf-8")
+        nombre, n = p.stem, 1
+        while nombre.lower() in usados:  # dos fallos con el mismo nombre en carpetas distintas: el segundo no pisa al primero
+            nombre, n = f"{p.stem}__{n}", n + 1
+        usados.add(nombre.lower())
+        (salida / f"{nombre}.md").write_text(md, encoding="utf-8")
         if compacto:
             md = compactar(md)
-            (salida / f"{p.stem}.compacto.md").write_text(md, encoding="utf-8")
+            (salida / f"{nombre}.compacto.md").write_text(md, encoding="utf-8")
         res["convertidos"] += 1
         res["chars_antes"] += len(crudo)
         res["chars_despues"] += len(md)

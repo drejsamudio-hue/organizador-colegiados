@@ -11,9 +11,12 @@ RE_CARATULA_LOG = re.compile(
 )
 
 
+_MARCAS_MOJIBAKE = ("Ã", "Â", "â€")  # lo que deja el UTF-8 leido como cp1252: Ã± / Â° / â€“
+
+
 def _reparar(texto: str | None) -> str | None:
     """SIGED entrega UTF-8 leido como cp1252 ("PEÃ‘A"); lo que ya esta bien queda igual."""
-    if not texto or "Ã" not in texto:
+    if not texto or not any(m in texto for m in _MARCAS_MOJIBAKE):
         return texto or None
     try:
         return texto.encode("cp1252").decode("utf-8")

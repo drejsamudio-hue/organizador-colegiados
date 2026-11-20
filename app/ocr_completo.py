@@ -15,6 +15,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -125,28 +126,26 @@ def ocr_completo(path: Path, destino: Path | None = None, simular: bool = False,
         return _resultado("pendiente", h)
 
     carpeta.mkdir(parents=True, exist_ok=True)
-    tmp = carpeta / "tmp"
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir()
+    # temporal propio de esta corrida: dos corridas sobre el mismo contenido (la consola y el panel) no se pisan
+    tmp = Path(tempfile.mkdtemp(prefix="tmp-", dir=carpeta))
     try:
-        salida = fitz.open()
         textos = []
-        with fitz.open(str(path)) as doc:
-            paginas = doc.page_count
-            for pg in doc:
-                dpi = dpi_para(pg.rect.width, pg.rect.height)
-                pix = pg.get_pixmap(dpi=dpi)
-                # PyMuPDF no hace OCR sobre un pixmap en gris (devuelve vacio): se reconoce en RGB y se reemplaza la imagen
-                with fitz.open("pdf", pix.pdfocr_tobytes(language="spa", tessdata=str(TESSDATA))) as una:
-                    textos.append(una[0].get_text())
-                    if not con_pdf:
-                        continue
-                    gris = fitz.Pixmap(fitz.csGRAY, pix)
-                    una[0].replace_image(una[0].get_images()[0][0], stream=gris.tobytes("jpeg", jpg_quality=JPEG_CALIDAD))
-                    salida.insert_pdf(una)
-        if con_pdf:
-            salida.save(str(tmp / PDF_BUSCABLE), garbage=3, deflate=True)
-        salida.close()
+        with fitz.open() as salida:
+            with fitz.open(str(path)) as doc:
+                paginas = doc.page_count
+                for pg in doc:
+                    dpi = dpi_para(pg.rect.width, pg.rect.height)
+                    pix = pg.get_pixmap(dpi=dpi)
+                    # PyMuPDF no hace OCR sobre un pixmap en gris (devuelve vacio): se reconoce en RGB y se reemplaza la imagen
+                    with fitz.open("pdf", pix.pdfocr_tobytes(language="spa", tessdata=str(TESSDATA))) as una:
+                        textos.append(una[0].get_text())
+                        if not con_pdf:
+                            continue
+                        gris = fitz.Pixmap(fitz.csGRAY, pix)
+                        una[0].replace_image(una[0].get_images()[0][0], stream=gris.tobytes("jpeg", jpg_quality=JPEG_CALIDAD))
+                        salida.insert_pdf(una)
+            if con_pdf:
+                salida.save(str(tmp / PDF_BUSCABLE), garbage=3, deflate=True)
         texto = "\n\f\n".join(textos)
         (tmp / TXT).write_text(texto, encoding="utf-8")
         if con_pdf:
@@ -262,6 +261,10 @@ def main() -> None:
     except KeyboardInterrupt:
         print("Interrumpido: lo hecho queda guardado; volver a correr continua.")
     print(" | ".join(f"{k}: {v}" for k, v in sorted(cuenta.items())) or "Nada para procesar.")
+    if cuenta.get("sin_ocr"):
+        print("[AVISO] hay PDF escaneados sin procesar porque falta el idioma del OCR: "
+              "instalar el idioma espanol desde el panel (seccion de OCR) o copiar spa.traineddata a "
+              f"{TESSDATA}.")
     if cuenta.get("ok") and BUSQUEDA_DB.is_file():
         r = busqueda.sincronizar(base=BASE)
         print("Indice de busqueda: " + " | ".join(f"{k}: {v}" for k, v in r.items()))

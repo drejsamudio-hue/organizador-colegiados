@@ -21,14 +21,20 @@ def publicar(archivo: Path, motivo: str, detalle: str, corpus: Path = CORPUS) ->
         destino.write_text(md, encoding="utf-8")
         return destino
     if motivo == "rama" and detalle in _AMBITO:
-        id_norma = kb_index.norma_id(archivo.stem) or kb_index.norma_id(fallo_md.texto_completo(archivo)[:2000])
+        leido: list[str] = []
+
+        def texto() -> str:  # se extrae una sola vez (con OCR puede tardar) y solo si el nombre no alcanza
+            if not leido:
+                leido.append(fallo_md.texto_completo(archivo))
+            return leido[0]
+
+        id_norma = kb_index.norma_id(archivo.stem) or kb_index.norma_id(texto()[:2000])
         if not id_norma:
             return None
-        ordenanza = kb_index.empieza_ordenanza(archivo.stem) or kb_index.empieza_ordenanza(
-            fallo_md.texto_completo(archivo)[:2000])
+        ordenanza = kb_index.empieza_ordenanza(archivo.stem) or kb_index.empieza_ordenanza(texto()[:2000])
         prefijo = "ordenanza" if ordenanza else "ley"
         carpeta = corpus / "legislacion" / ("municipal" if ordenanza else _AMBITO[detalle])
         if (carpeta / f"{prefijo}-{id_norma}.md").exists():
             return None
-        return norma_md.convertir_norma(archivo, carpeta, id_norma, prefijo)["ruta"]
+        return norma_md.convertir_norma(archivo, carpeta, id_norma, prefijo, texto())["ruta"]
     return None

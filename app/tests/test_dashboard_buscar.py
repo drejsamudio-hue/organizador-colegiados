@@ -17,6 +17,7 @@ def base(tmp_path, monkeypatch):
     B.sincronizar(base=b, db=db)
     monkeypatch.setattr(B, "BUSQUEDA_DB", db)
     monkeypatch.setattr(D, "BASE", b)
+    monkeypatch.setattr(D, "_busqueda_act", {"estado": "ocioso", "resultado": None, "error": None})
     return b
 
 

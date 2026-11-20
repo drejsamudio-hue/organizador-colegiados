@@ -14,7 +14,8 @@ MAX_ARCHIVOS = 20000
 MAX_TEXTOS = 300
 FUENTES = ("carpeta", "archivo", "texto")
 
-_EN_NOMBRE = re.compile(r"(?<![\d/.\-])(\d{2,6})\s*[-_/]\s*((?:19|20)\d{2})(?!\d)")
+_EN_NOMBRE = re.compile(r"(?<![\d/.\-])(\d{2,6})\s*[-_/]\s*((?:19|20)\d{2})"
+                        r"(?:\s*bis\s*(\d{1,2})\s*[-_/]\s*(\d{2,4}))?(?!\d)", re.I)
 _INICIO_LISTA = re.compile(r"^\s*(\d{1,7}\s*/\s*\d{4}(?:\s*bis\s*\d+\s*[/-]\s*\d{2,4})?)(.*)$", re.I)
 
 
@@ -40,14 +41,19 @@ def compilar_patron(texto: str | None) -> re.Pattern | None:
 def expte_en_nombre(nombre: str, propio: re.Pattern | None = None) -> Expte | None:
     for rx in ([propio] if propio else []) + [_EN_NOMBRE]:
         for m in rx.finditer(nombre):
-            e = normalizar_expte(f"{int(m.group(1))}/{m.group(2)}") if m.group(1).isdigit() else None
+            if not m.group(1).isdigit():
+                continue
+            # el incidente (bis y su anio) entra en la clave; el patron propio del usuario trae solo numero y anio
+            bis = f" bis{m.group(3)}/{m.group(4)}" if rx is _EN_NOMBRE and m.group(3) else ""
+            e = normalizar_expte(f"{int(m.group(1))}/{m.group(2)}{bis}")
             if e is not None:
                 return e
     return None
 
 
 def parsear_lista(texto: str) -> tuple[list[tuple[Expte, str | None]], list[str]]:
-    """Una causa por linea: 'NNNN/AAAA' y, si queres, la caratula despues (espacio, coma, tab o punto y coma)."""
+    """Una causa por linea: 'NNNN/AAAA' (o 'NNNN/AAAA bisN/AA') y, si queres, la caratula despues (espacio, coma, tab
+    o punto y coma). El incidente queda en el numero, no en la caratula."""
     items, invalidas = [], []
     for linea in texto.splitlines():
         if not linea.strip():
@@ -64,16 +70,25 @@ def parsear_lista(texto: str) -> tuple[list[tuple[Expte, str | None]], list[str]
 
 def carpeta_libre(c: Causa, ocupadas: set[str]) -> str:
     nombre = nombre_carpeta(c)
-    if nombre in ocupadas:
-        nombre = f"{nombre}-{c.expte.numero}"
-    return nombre
+    if nombre not in ocupadas:
+        return nombre
+    base = f"{nombre}-{c.expte.numero}"
+    if base not in ocupadas:
+        return base
+    i = 2
+    while f"{base}-{i}" in ocupadas:
+        i += 1
+    return f"{base}-{i}"
 
 
 def agregar(existentes: list[Causa], items: list[tuple[Expte, str | None]], fuente: str,
-            dependencia: str | None = None) -> tuple[list[Causa], dict]:
-    """Devuelve la cartera completa y un resumen. No pisa causas ya cargadas."""
+            dependencia: str | None = None, en_disco: set[str] | None = None) -> tuple[list[Causa], dict]:
+    """Devuelve la cartera completa y un resumen. No pisa causas ya cargadas.
+
+    `en_disco`: nombres de las carpetas que ya existen en 01_Expedientes. Una causa nueva nunca pretende el nombre
+    de una carpeta que ya esta ahi sin saber de quien es: si coincide, se le agrega el numero al final."""
     claves = {c.expte.clave_completa for c in existentes}
-    ocupadas = {n for c in existentes for n in (c.carpeta, c.carpeta_prevista) if n}
+    ocupadas = {n for c in existentes for n in (c.carpeta, c.carpeta_prevista) if n} | set(en_disco or ())
     nuevas, repetidas = [], []
     for e, caratula in items:
         if e.clave_completa in claves:

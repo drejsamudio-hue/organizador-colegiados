@@ -44,11 +44,16 @@ def respaldar(ruta: Path, conservar: int = CONSERVAR) -> Path | None:
         return None
     destino = ruta.parent / CARPETA
     previas = sorted(destino.glob(f"{ruta.name}.*.bak")) if destino.is_dir() else []
-    if previas and _hash(previas[-1]) == _hash(ruta):
+    if previas and previas[-1].stat().st_size == ruta.stat().st_size and _hash(previas[-1]) == _hash(ruta):
         return None
     destino.mkdir(exist_ok=True)
     copia = destino / f"{ruta.name}.{datetime.now():%Y%m%d-%H%M%S-%f}.bak"
-    shutil.copy2(ruta, copia)
+    tmp = copia.with_name(copia.name + ".tmp")  # un corte a mitad de copia no deja un .bak truncado como "ultima copia"
+    try:
+        shutil.copy2(ruta, tmp)
+        tmp.replace(copia)
+    finally:
+        tmp.unlink(missing_ok=True)
     previas.append(copia)
     for vieja in previas[:-conservar] if conservar > 0 else []:
         vieja.unlink(missing_ok=True)
@@ -59,9 +64,13 @@ def respaldar_codigo(destino: Path) -> Path:
     repo = Path(__file__).resolve().parent
     destino.mkdir(parents=True, exist_ok=True)
     salida = destino / f"organizador-{datetime.now():%Y%m%d-%H%M%S}.bundle"
-    subprocess.run(["git", "bundle", "create", str(salida), "--all"], cwd=repo, check=True,
-                   capture_output=True, text=True)
-    subprocess.run(["git", "bundle", "verify", str(salida)], cwd=repo, check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(["git", "bundle", "create", str(salida), "--all"], cwd=repo, check=True,
+                       capture_output=True, text=True)
+        subprocess.run(["git", "bundle", "verify", str(salida)], cwd=repo, check=True, capture_output=True, text=True)
+    except BaseException:
+        salida.unlink(missing_ok=True)  # un bundle que no verifica no es un respaldo
+        raise
     return salida
 
 

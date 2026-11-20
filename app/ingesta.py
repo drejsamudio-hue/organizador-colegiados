@@ -9,6 +9,10 @@ Uso:
     python ingesta.py --src DIR --incluir-no-clasificados  # tambien saca lo no reconocido a _INBOX
     python ingesta.py --aplicar-csv RUTA  # mueve lo aprobado en un CSV de simulacion (accion=mover), sin reclasificar
 
+Cada fila de propuesta lleva el hash del contenido en el momento de simular: al aplicar, un archivo que cambio
+queda en origen, y una propuesta sin hash (anterior a esta verificacion) no mueve nada. Tandas (aplicar o
+deshacer) de a una por vez, en todos los procesos. La zona del sistema (_SISTEMA, indices, propuestas) nunca entra.
+
 Soporta PDF, .txt, .md, .docx, .doc. Cada movimiento queda registrado en
 _SISTEMA/INGESTA_RUTEO.csv (origen, destino) para poder deshacerlo.
 Orden de decision: cartera propia (id de SIGED o numero) -> expediente -> alias ->
@@ -29,6 +33,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import sys
 import time
@@ -51,6 +56,7 @@ from fase3_juris import FALLO, clasificar  # noqa: E402
 from fase6b_renombres import RENOMBRES  # noqa: E402
 
 from config import APELLIDOS_PROPIOS, BASE  # noqa: E402
+from ocr_completo import hash_archivo  # noqa: E402
 from respaldo import respaldar  # noqa: E402
 import kb_index  # noqa: E402
 import kb_publicar  # noqa: E402
@@ -65,6 +71,23 @@ ALIAS_FILE = SISTEMA / "aliases.json"
 
 IGNORAR = {"_sin_texto", "sin_texto", "sin_clasificar", "formato_desconocido",
            "desde_Organizado", "expediente_dudoso", "no_pdf"}
+
+# Zona interna del sistema: nunca entra en una tanda, ni de origen ni de destino. Elegir la carpeta del estudio
+# como origen es un error facil y no puede terminar moviendo la cartera, el indice o el registro de movimientos.
+DIRS_RESERVADOS = {"_SISTEMA"}
+ARCHIVOS_RESERVADOS = {"busqueda.db", "busqueda.db-wal", "busqueda.db-shm", "INGESTA_RUTEO.csv", "TANDAS.csv",
+                       "PUBLICADOS.csv", "cartera.json", "aliases.json", "aliases_cartera.json",
+                       "carpetas_propias.json", "dashboard_log.json", "CARTERA_APLICADO.csv",
+                       "PROPIEDAD_CARPETAS.csv", "hosts_permitidos.txt", "ingesta.lock", ".tanda.lock"}
+RE_RESERVADO = re.compile(r"^(?:REORG_[\w.-]+\.csv|\.~[0-9a-f]+\.incompleto)$")  # propuestas y copias a medias entre unidades
+
+
+def es_reservado(p: Path) -> bool:
+    """True si el archivo o la carpeta es de la zona interna: no se recorre ni se mueve en las tandas."""
+    if p.name in ARCHIVOS_RESERVADOS or RE_RESERVADO.match(p.name):
+        return True
+    return p.name in DIRS_RESERVADOS or any(padre.name in DIRS_RESERVADOS for padre in p.parents)
+
 
 FORMATOS_CON_TEXTO = {".pdf", ".txt", ".md", ".docx", ".doc", ".csv", ".log"}
 FORMATOS_SIN_TEXTO = {
@@ -104,7 +127,7 @@ def _leer_aliases(archivo: Path) -> list[tuple[re.Pattern, str]]:
         return []
     compilados = []
     try:
-        for a in json.loads(archivo.read_text(encoding="utf-8")).get("aliases", []):
+        for a in json.loads(archivo.read_text(encoding="utf-8-sig")).get("aliases", []):
             try:
                 compilados.append((re.compile(a["pattern"], re.IGNORECASE), a["caso"]))
             except re.error:
@@ -228,18 +251,27 @@ def _mapa_exptes() -> dict[str, str]:
     global _exptes_cache
     if _exptes_cache is None:
         m: dict[str, Counter] = {}
+        aprendido: list[tuple[str, str, str]] = []  # (expte, carpeta, donde quedo el archivo), en orden
         for nombre in ("FASE2_RUTEO.csv", "FASE4_RUTEO.csv", RUTEO_CSV.name):
             ruta = BASE / "_SISTEMA" / nombre
             if not ruta.exists():
                 continue
             with ruta.open(encoding="utf-8", newline="") as fh:
                 for r in csv.DictReader(fh):
+                    if r.get("motivo") == "deshacer":  # el movimiento que se deshizo ya no ensena nada
+                        for i in range(len(aprendido) - 1, -1, -1):
+                            if aprendido[i][2] == r.get("origen"):
+                                del aprendido[i]
+                                break
+                        continue
                     expte = r.get("expediente") or (
                         r.get("detalle") if r.get("motivo") in ("expediente", "expediente_nuevo") else None)
                     partes = PureWindowsPath(r.get("destino", "")).parts
                     if expte and "01_Expedientes" in partes[:-1]:
                         caso = partes[partes.index("01_Expedientes") + 1]
-                        m.setdefault(expte, Counter())[RENOMBRES.get(caso, caso)] += 1
+                        aprendido.append((expte, RENOMBRES.get(caso, caso), r.get("destino", "")))
+        for expte, caso, _ in aprendido:
+            m.setdefault(expte, Counter())[caso] += 1
         _exptes_cache = {e: next(iter(c)) for e, c in m.items()
                          if len(c) == 1 and (CASOS / next(iter(c))).is_dir()}
     return _exptes_cache
@@ -254,19 +286,21 @@ def _misma_caratula(caratula: str, carpeta: str) -> bool:
     return a[0] == b[0] and len(a[0]) >= 4 and bool(propios & set(_utiles(a[1:])))
 
 
-def carpeta_de_caso(expte: str, caratula: str | None) -> tuple[Path, bool]:
+def carpeta_de_caso(expte: str, caratula: str | None) -> tuple[Path, bool, bool]:
+    """(carpeta, existe, vinculada). `vinculada` solo cuando el vinculo viene del historial de ruteos: una
+    carpeta que coincide por nombre puede ser de otra causa con el mismo numero."""
     caso = _mapa_exptes().get(expte)
     if caso:
-        return CASOS / caso, True
+        return CASOS / caso, True, True
     num, anio = expte.split("/")
     for d in sorted(CASOS.iterdir()):
         if not d.is_dir():
             continue
         if f"expte-{num}-{anio}" in d.name:
-            return d, True
+            return d, True, False
         if caratula and d.name.startswith(anio) and _misma_caratula(caratula, d.name):
-            return d, True
-    return CASOS / f"{anio}-{caratula or f'expte-{num}-{anio}'}", False
+            return d, True, False
+    return CASOS / f"{anio}-{caratula or f'expte-{num}-{anio}'}", False, False
 
 
 # ── Cartera propia ───────────────────────────────────────────────────
@@ -274,7 +308,7 @@ def carpeta_de_caso(expte: str, caratula: str | None) -> tuple[Path, bool]:
 RE_ID = re.compile(r"(?<![a-z])id[-_]?(\d{5,8})(?!\d)", re.I)
 RE_NUM_FECHA = re.compile(r"(?<!\d)\d{1,6}[-_]\d{4}-\d{2}-\d{2}(?!\d)")
 RE_NUM_ANIO = re.compile(r"(?<!\d)(\d{1,7})[-_/ ]?((?:19|20)\d{2})(?!\d)")
-RE_BIS = re.compile(r"bis[-_ ]?(\d+)", re.I)
+RE_BIS = re.compile(r"bis[-_ ]?(\d+)(?:\s*[-_/]\s*((?:19|20)?\d{2})(?!\d))?", re.I)
 RE_BIS_SIN_NUMERO = re.compile(r"(?<![a-z])bis(?![a-z\d]|[-_ ]\d)", re.I)
 # dd-mm-aaaa y CUIT: sin quitarlos, "escrito 15-03-2024" se lee como expediente 3/2024
 RE_FECHA_DMA = re.compile(r"(?<!\d)\d{1,2}[-_/.]\d{1,2}[-_/.](?:19|20)\d{2}(?!\d)")
@@ -300,21 +334,24 @@ class IndiceCartera:
     def __init__(self, causas):
         self.por_id: dict[str, str] = {}
         self.por_clave: dict[str, str] = {}
-        self.por_bis: dict[str, str] = {}
+        self.por_bis: dict[str, str] = {}  # clave completa del incidente ("N/AAAA bisB/AA"), con su anio
+        self.vinculadas: set[str] = set()  # carpetas confirmadas en la cartera (c.carpeta)
         self.previstas: set[str] = set()
         self.partes: list[tuple[str, list[str], list[str]]] = []
         for c in causas:
             carpeta = c.carpeta or c.carpeta_prevista
             if not carpeta:
                 continue
-            if not c.carpeta:
+            if c.carpeta:
+                self.vinculadas.add(c.carpeta)
+            else:
                 self.previstas.add(carpeta)
             if c.id_expediente:
                 self.por_id[c.id_expediente] = carpeta
             if c.expte.bis is None:
                 self.por_clave[c.expte.clave] = carpeta
-            else:
-                self.por_bis[f"{c.expte.clave} bis{c.expte.bis}"] = carpeta
+            else:  # dos incidentes bis1 del mismo principal de anios distintos son causas distintas
+                self.por_bis[c.expte.clave_completa] = carpeta
             if c.caratula:
                 actor, dem = _partes_de(c.caratula)
                 if actor:
@@ -333,10 +370,19 @@ class IndiceCartera:
                 hits.add(carpeta)
         return next(iter(hits)) if len(hits) == 1 else None
 
-    def por_numero(self, numero: int, anio: int, bis: int | None = None) -> str | None:
+    def por_numero(self, numero: int, anio: int, bis: int | None = None, bis_anio: int | None = None) -> str | None:
         clave = f"{numero}/{anio}"
-        if bis is not None and f"{clave} bis{bis}" in self.por_bis:
-            return self.por_bis[f"{clave} bis{bis}"]
+        if bis is not None:
+            if bis_anio is not None and f"{clave} bis{bis}/{bis_anio % 100:02d}" in self.por_bis:
+                return self.por_bis[f"{clave} bis{bis}/{bis_anio % 100:02d}"]
+            # Sin el anio del incidente (o con uno que no coincide) solo se rutea si hay exactamente uno con ese
+            # bis: con dos o mas la causa es ambigua. Sin ningun incidente con ese bis sigue el principal
+            # (recibos y codigos de banco que traen "BIS" en el nombre).
+            candidatos = {v for k, v in self.por_bis.items() if k.startswith(f"{clave} bis{bis}/")}
+            if bis_anio is None and len(candidatos) == 1:
+                return next(iter(candidatos))
+            if candidatos:
+                return None
         return self.por_clave.get(clave)
 
 
@@ -349,15 +395,17 @@ def _indice() -> IndiceCartera:
     if m != _indice_cache[0]:
         try:
             indice = IndiceCartera(cargar_cartera(CARTERA_JSON))
-        except (json.JSONDecodeError, OSError, KeyError, TypeError, AttributeError) as exc:
+        except (ValueError, OSError, KeyError, TypeError, AttributeError) as exc:  # ValueError: JSON roto o no UTF-8
             print(f"[cartera ilegible, se ignora] {CARTERA_JSON.name}: {exc}", file=sys.stderr)
             indice = IndiceCartera([])
         _indice_cache = (m, indice)
     return _indice_cache[1]
 
 
-def _caso_cartera(nombre: str, texto: str | None) -> tuple[str, str] | None:
-    """(carpeta, via). Por id de SIGED, numero o nombre de las partes en el nombre; por numero en el texto si se pasa."""
+def _caso_cartera(nombre: str, texto: str | None) -> tuple[str, str, bool] | None:
+    """(carpeta, via, senal_fuerte). Por id de SIGED, numero o nombre de las partes en el nombre; por numero en el
+    texto si se pasa. `senal_fuerte` distingue el vinculo confirmado (id de SIGED, carpeta vinculada en la cartera o
+    carpeta que se crearia al mover) de la mera coincidencia de nombre con una carpeta que existe sin vinculo."""
     idx = _indice()
 
     def existe(carpeta: str | None) -> str | None:
@@ -365,24 +413,28 @@ def _caso_cartera(nombre: str, texto: str | None) -> tuple[str, str] | None:
 
     m = RE_ID.search(nombre)
     if m and existe(idx.por_id.get(m.group(1))):
-        return idx.por_id[m.group(1)], "id"
+        return idx.por_id[m.group(1)], "id", True
     sin_fecha = RE_CUIT.sub(" ", RE_FECHA_DMA.sub(" ", RE_NUM_FECHA.sub(" ", nombre)))
     bis = RE_BIS.search(sin_fecha)
     for mm in RE_NUM_ANIO.finditer(sin_fecha):
-        carpeta = existe(idx.por_numero(int(mm.group(1)), int(mm.group(2)), int(bis.group(1)) if bis else None))
+        carpeta = existe(idx.por_numero(int(mm.group(1)), int(mm.group(2)), int(bis.group(1)) if bis else None,
+                                        int(bis.group(2)) if bis and bis.group(2) else None))
         if carpeta:
             # "bis" sin numero: puede ser un incidente, no la causa principal
-            return carpeta, "numero_nombre_bis" if not bis and RE_BIS_SIN_NUMERO.search(sin_fecha) else "numero_nombre"
+            if not bis and RE_BIS_SIN_NUMERO.search(sin_fecha):
+                return carpeta, "numero_nombre_bis", False
+            # la carpeta existe pero la causa no la tiene vinculada: coincide el nombre, no la causa
+            return carpeta, "numero_nombre", carpeta in idx.vinculadas or not (CASOS / carpeta).is_dir()
     carpeta = existe(idx.por_partes(nombre))
     if carpeta:
-        return carpeta, "partes"
+        return carpeta, "partes", False
     if texto:
         e = buscar_expte(texto)
         if e:
             n, a = e.split("/")
             carpeta = existe(idx.por_numero(int(n), int(a)))
             if carpeta:
-                return carpeta, "numero_texto"
+                return carpeta, "numero_texto", False
     return None
 
 
@@ -417,14 +469,18 @@ def _por_rama(p: Path, ext: str, texto: str) -> Destino:
     return Destino(ruta_doctrina(d, BASE), "doctrina", f"{d.tipo} | {d.motivo}", confianza)
 
 
-def destino_de(p: Path) -> Destino:
+def destino_de(p: Path, texto: tuple[str | None, str | None] | None = None) -> Destino:
+    """`texto`: (texto, error) ya extraido, para no leer el archivo dos veces cuando el llamador tambien lo necesita."""
     ext = p.suffix.lower()
     nombre = p.stem
 
     if ext not in FORMATOS_CON_TEXTO and ext not in FORMATOS_SIN_TEXTO:
         return Destino(INBOX / "formato_desconocido", "formato_desconocido", ext, "baja")
 
-    texto, err = (None, None) if ext in FORMATOS_SIN_TEXTO else extraer_universal(p)
+    if texto is None:
+        texto, err = (None, None) if ext in FORMATOS_SIN_TEXTO else extraer_universal(p)
+    else:
+        texto, err = texto
     if err in ("doc_lectura_binaria", "ocr_ilegible"):
         texto = None  # basura binaria + metadatos: no sirve para decidir por contenido
     hay_texto = bool(texto and len(texto.strip()) >= 30)
@@ -434,9 +490,9 @@ def destino_de(p: Path) -> Destino:
 
     hit = _caso_cartera(nombre, texto if hay_texto and not es_juris else None)
     if hit:
-        carpeta, via = hit
+        carpeta, via, fuerte = hit
         sub_c = "00_escritos_propios" if firmado or _borrador(nombre, ext, via) else "01_siged"
-        return Destino(CASOS / carpeta / sub_c, "cartera", via, "alta" if via in ("id", "numero_nombre") else "media")
+        return Destino(CASOS / carpeta / sub_c, "cartera", via, "alta" if fuerte else "media")
 
     if not hay_texto:
         caso = _match_alias(nombre)
@@ -451,9 +507,9 @@ def destino_de(p: Path) -> Destino:
     sub_e = "00_escritos_propios" if firmado else "01_siged"
 
     if expte and (propio or caratula):
-        carpeta, existe = carpeta_de_caso(expte, caratula)
-        if existe:
-            return Destino(carpeta / sub_e, "expediente", expte, "alta")
+        carpeta, existe, vinculada = carpeta_de_caso(expte, caratula)
+        if existe:  # la carpeta que solo coincide por nombre puede ser de otra causa con el mismo numero: a revisar
+            return Destino(carpeta / sub_e, "expediente", expte, "alta" if vinculada else "media")
         # Un numero que no es de la cartera no abre carpeta: casi siempre es una causa citada o ajena.
 
     caso = _match_alias(nombre)
@@ -479,10 +535,13 @@ def destino_de(p: Path) -> Destino:
     return _por_rama(p, ext, texto)
 
 
-def destino_ajeno(p: Path, carpeta: str) -> Destino:
+def destino_ajeno(p: Path, carpeta: str, texto: tuple[str | None, str | None] | None = None) -> Destino:
     """Archivo de una carpeta de causa que no es del Dr.: los fallos y la doctrina van a su tema; el resto,
-    a 06_Expedientes_ajenos conservando el nombre de la carpeta."""
-    texto, err = extraer_universal(p)
+    a 06_Expedientes_ajenos conservando el nombre de la carpeta. `texto`: como en destino_de."""
+    if texto is None:
+        texto, err = extraer_universal(p)
+    else:
+        texto, err = texto
     texto = texto if err not in ("doc_lectura_binaria", "ocr_ilegible") else None
     if texto and len(texto.strip()) > 200:
         destino, rama = clasificar(texto)
@@ -509,15 +568,16 @@ MARCAS_DE_PROYECTO = {"package.json", ".git", "node_modules", "pyproject.toml", 
 
 
 def archivos_pendientes(origen: Path) -> list[Path]:
-    """Recorre origen sin entrar en las carpetas ignoradas ni en proyectos de codigo."""
+    """Recorre origen sin entrar en las carpetas ignoradas ni en proyectos de codigo. La zona interna del sistema
+    (_SISTEMA, indices, propuestas) nunca es candidata."""
     out = []
     for raiz, dirs, archivos in os.walk(origen):
         if raiz != str(origen) and (MARCAS_DE_PROYECTO & (set(dirs) | set(archivos))
                                     or RE_REPO_DESCARGADO.search(Path(raiz).name) or "SKILL.md" in archivos):
             dirs.clear()
             continue
-        dirs[:] = [d for d in dirs if d not in IGNORAR and d not in MARCAS_DE_PROYECTO]
-        out += [Path(raiz) / a for a in archivos]
+        dirs[:] = [d for d in dirs if d not in IGNORAR and d not in MARCAS_DE_PROYECTO and d not in DIRS_RESERVADOS]
+        out += [Path(raiz) / a for a in archivos if not es_reservado(Path(raiz) / a)]
     return out
 
 
@@ -533,6 +593,8 @@ def _leer_csv(ruta: Path) -> tuple[list[str], list[dict]]:
             break
         except UnicodeDecodeError:
             continue
+    else:  # cp1252 no define unos pocos bytes (0x81, 0x8d, 0x8f, 0x90, 0x9d)
+        texto = datos.decode("latin-1")
     lineas = texto.splitlines()
     if not lineas:
         return [], []
@@ -583,13 +645,45 @@ def _anotar(origen: Path, destino: Path, motivo: str, detalle: str = "") -> None
                     st.st_size, st.st_mtime_ns])
 
 
-def _renombrar(src: Path, dst: Path) -> None:
-    """Mueve sin copiar ni pisar: en Windows os.rename falla si el destino existe o si el archivo esta abierto
-    (shutil.move copiaba y dejaba una copia sin registrar, o pisaba el destino)."""
-    try:
+def _renombrar_sin_pisar(src: Path, dst: Path) -> None:
+    """Renombra sin reemplazar NUNCA un destino que exista y sin ventana de carrera: FileExistsError si ya esta.
+
+    - Windows: os.rename ya es sin reemplazo (MoveFileEx sin REPLACE_EXISTING).
+    - Linux: renameat2(RENAME_NOREPLACE) si el kernel lo da; si no, link + unlink (atomico, falla si existe).
+      Nunca un rename a pelo: en POSIX reemplazaria un destino que aparezca entre el chequeo y el rename."""
+    if os.name == "nt":
         os.rename(src, dst)
+        return
+    try:
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        res = libc.renameat2(ctypes.c_int(-100), os.fsencode(src), ctypes.c_int(-100),
+                             os.fsencode(dst), ctypes.c_uint(1))  # AT_FDCWD, RENAME_NOREPLACE
+        err = ctypes.get_errno()
+    except (AttributeError, OSError):  # sin libc o sin renameat2 (glibc viejo, macOS)
+        res, err = -1, errno.ENOSYS
+    if res == 0:
+        return
+    if err not in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP):
+        raise OSError(err, os.strerror(err), str(src), None, str(dst))
+    os.link(src, dst)  # FileExistsError si dst aparecio entremedio: eso se quiere
+    os.unlink(src)
+
+
+def _copiar_sin_pisar(src: Path, dst: Path) -> None:
+    """Copia creando el destino en modo exclusivo: FileExistsError, sin truncar nada, si ya existe."""
+    with open(src, "rb") as entrada, open(dst, "xb") as salida:
+        shutil.copyfileobj(entrada, salida, 1 << 20)
+    shutil.copystat(src, dst)
+
+
+def _renombrar(src: Path, dst: Path) -> None:
+    """Mueve sin copiar ni pisar: FileExistsError si el destino existe (el llamador prueba otro nombre) y un aviso
+    claro si el archivo esta abierto en otro programa. Entre unidades copia, verifica y recien despues borra."""
+    try:
+        _renombrar_sin_pisar(src, dst)
     except FileExistsError as exc:
-        raise OSError(f"el destino ya existe: {dst}") from exc
+        raise FileExistsError(f"el destino ya existe: {dst}") from exc
     except PermissionError as exc:
         raise OSError(f"abierto en otro programa o sin permiso: {src}") from exc
     except OSError as exc:
@@ -623,7 +717,7 @@ def _mover_entre_unidades(src: Path, dst: Path) -> None:
     recien entonces lo borra. Si algo falla, la copia se descarta solo si se sabe que el origen sigue: nunca quedan
     cero ejemplares, y lo que no se pueda limpiar queda nombrado en el error."""
     if _existe(dst) is not False:
-        raise OSError(f"el destino ya existe: {dst}")
+        raise FileExistsError(f"el destino ya existe: {dst}")
     antes = os.stat(src)
     tmp = dst.with_name(f".~{secrets.token_hex(6)}.incompleto")
     copia: Path | None = None
@@ -645,7 +739,7 @@ def _mover_entre_unidades(src: Path, dst: Path) -> None:
         if _sha256_archivo(tmp) != h.hexdigest():
             raise OSError(f"la copia en {tmp} no coincide con el origen")
         renombrando = True
-        os.rename(tmp, dst)  # misma carpeta: no cruza de unidad y falla si el destino aparecio entretanto
+        _renombrar_sin_pisar(tmp, dst)  # misma carpeta: no cruza de unidad y falla si el destino aparecio entretanto
         copia, verificada = dst, True
         solo_lectura = not os.access(src, os.W_OK)
         if solo_lectura:  # Windows no borra un archivo de solo lectura; os.rename en la misma unidad si lo mueve
@@ -676,7 +770,7 @@ def _mover_entre_unidades(src: Path, dst: Path) -> None:
                     exc.add_note(f"no se pudo descartar la copia {copia}: {exc2}")
                     raise
             if isinstance(exc, FileExistsError):
-                raise OSError(f"el destino ya existe: {dst}") from exc
+                raise FileExistsError(f"el destino ya existe: {dst}") from exc
             if borrando and isinstance(exc, PermissionError):
                 raise OSError(f"abierto en otro programa o sin permiso: {src}") from exc
             raise
@@ -704,14 +798,24 @@ def mover(src: Path, carpeta: Path, motivo: str, detalle: str = "", nombre: str 
         return src
     if not carpeta.resolve().is_relative_to(BASE.resolve()):
         raise OSError(f"destino fuera de la base: {carpeta}")
+    if es_reservado(src) or es_reservado(carpeta):
+        raise OSError(f"la zona del sistema no entra en las tandas: {src if es_reservado(src) else carpeta}")
     carpeta.mkdir(parents=True, exist_ok=True)
-    dst = destino_unico(carpeta / ((Path(nombre).stem + src.suffix) if nombre else src.name))
+    pedido = carpeta / ((Path(nombre).stem + src.suffix) if nombre else src.name)
+    dst = destino_unico(pedido)
     for ruta in (src, dst):
         try:
             str(ruta).encode("utf-8")
         except UnicodeEncodeError as exc:
             raise OSError(f"el nombre tiene caracteres que el registro no puede guardar: {ruta!r}") from exc
-    _renombrar(src, dst)
+    for _ in range(4):  # si el nombre aparece entremedio se prueba otro (nota__1.txt): nunca se pisa
+        try:
+            _renombrar(src, dst)
+            break
+        except FileExistsError:
+            dst = destino_unico(pedido)
+    else:
+        raise OSError(f"el destino ya existe y se sigue ocupando, no se pisa: {src}")
     try:
         _anotar(src, dst, motivo, detalle)
     except Exception as exc:
@@ -737,15 +841,9 @@ def causas_sin_carpeta(causas: list) -> dict:
 
 
 def _leer_propuestas(ruta: Path) -> list[dict]:
-    """El CSV de la simulacion, tal cual o re-guardado por Excel (punto y coma, cp1252)."""
-    for encoding in ("utf-8-sig", "cp1252"):
-        try:
-            texto = ruta.read_text(encoding=encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-    dialecto = csv.Sniffer().sniff(texto.splitlines()[0], delimiters=",;\t")
-    return list(csv.DictReader(texto.splitlines(), dialect=dialecto))
+    """El CSV de la simulacion, tal cual o re-guardado por Excel (punto y coma, cp1252). Un CSV vacio da []; una
+    cabecera que el Sniffer no reconoce se lee con coma, como la escriben esta aplicacion y la consola."""
+    return _leer_csv(ruta)[1]
 
 
 def leer_ruteo() -> list[dict]:
@@ -839,8 +937,15 @@ class Ocupado(OSError):
     """Otra aplicacion o deshacer (de este u otro proceso) tiene el registro tomado."""
 
 
+class TandaEnCurso(Ocupado):
+    """Otra tanda (aplicar o deshacer, desde el dashboard o la consola) esta corriendo sobre la misma base."""
+
+
+POSICION_BLOQUEO = 1 << 30  # el byte trabado queda lejos del contenido: el pid escrito se puede leer en Windows
+
+
 def _trabar(f, trabar: bool) -> None:
-    f.seek(0)
+    f.seek(POSICION_BLOQUEO)
     if os.name == "nt":
         import msvcrt
         msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK if trabar else msvcrt.LK_UNLCK, 1)
@@ -849,10 +954,19 @@ def _trabar(f, trabar: bool) -> None:
         fcntl.flock(f, (fcntl.LOCK_EX | fcntl.LOCK_NB) if trabar else fcntl.LOCK_UN)
 
 
+def _pid_del_bloqueo(ruta: Path) -> int | None:
+    try:
+        return int(ruta.read_bytes()[:20].decode("ascii", "ignore").strip()) or None
+    except (OSError, ValueError):
+        return None
+
+
 @contextmanager
-def _bloqueo(espera: float | None = None):
-    """Una sola aplicacion o deshacer por vez, en todos los procesos (dashboard y CLI). El sistema operativo
-    libera el bloqueo si el proceso muere: nunca queda trabado."""
+def bloqueo_tanda(espera: float | None = None):
+    """Una sola tanda (aplicar o deshacer) por vez, en todos los procesos: dashboard, consola y cartera_cli
+    comparten _SISTEMA/ingesta.lock. Mientras dura, el archivo lleva el pid de quien lo tiene (para avisar de quien
+    es). Si hay otra, espera hasta `espera` segundos (ESPERA_BLOQUEO si no se da) y levanta TandaEnCurso. El sistema
+    operativo libera el bloqueo si el proceso muere: un bloqueo huerfano no existe, nunca queda trabado."""
     ruta = RUTEO_CSV.with_name("ingesta.lock")
     ruta.parent.mkdir(parents=True, exist_ok=True)
     with ruta.open("a+b") as f:
@@ -863,12 +977,30 @@ def _bloqueo(espera: float | None = None):
                 break
             except OSError:
                 if time.monotonic() >= limite:
-                    raise Ocupado("hay otra aplicacion o deshacer en curso; probar de nuevo en un momento") from None
+                    pid = _pid_del_bloqueo(ruta)
+                    raise TandaEnCurso(f"hay otra tanda (aplicar o deshacer) en curso{f' (proceso {pid})' if pid else ''}"
+                                       "; probar de nuevo en un momento") from None
                 time.sleep(0.2)
+        try:
+            f.seek(0)
+            f.truncate(0)
+            f.write(str(os.getpid()).encode("ascii"))
+            f.flush()
+        except OSError:
+            pass  # solo se pierde el aviso del pid
         try:
             yield
         finally:
+            try:
+                f.truncate(0)
+                f.flush()
+            except OSError:
+                pass
             _trabar(f, False)
+
+
+def _bloqueo(espera: float | None = None):
+    return bloqueo_tanda(espera)
 
 
 def _tanda_de_lo_escrito(origen: str, inicio: int) -> str | None:
@@ -907,6 +1039,12 @@ def _deshacer_indices(indices: list[int], etiqueta: str) -> dict:
         if f.get("motivo") == "deshacer":
             continue
         dst, org = Path(f["destino"]), Path(f["origen"])
+        if es_reservado(dst) or es_reservado(org):
+            avisos.append(f"[archivo de la zona del sistema, no se toca] {dst}")
+            continue
+        if not dst.resolve().is_relative_to(BASE.resolve()):  # el origen puede estar afuera (Descargas); el destino no
+            avisos.append(f"[destino fuera de {BASE}, no se toca] {dst}")
+            continue
         if not dst.is_file():
             avisos.append(f"[ya no esta en el destino] {dst}")
             continue
@@ -921,6 +1059,9 @@ def _deshacer_indices(indices: list[int], etiqueta: str) -> dict:
         try:
             org.parent.mkdir(parents=True, exist_ok=True)
             _renombrar(dst, org)
+        except FileExistsError:
+            avisos.append(f"[el origen se ocupo entremedio] {org}")
+            continue
         except OSError as exc:
             avisos.append(f"[ERROR] {dst}: {exc}")
             continue
@@ -947,6 +1088,8 @@ def _deshacer_indices(indices: list[int], etiqueta: str) -> dict:
         despublicados += aviso == ""
         if aviso:
             avisos.append(aviso)
+    global _exptes_cache
+    _exptes_cache = None  # lo deshecho ya no ensena a que carpeta va un expediente
     tanda = _tanda_de_lo_escrito(f"deshacer:{etiqueta.removeprefix('filas ')}", inicio)
     if despublicados:
         _reindexar()
@@ -1043,12 +1186,13 @@ def _reindexar() -> None:
 
 
 def aplicar_filas(filas: list[dict], origen: str) -> dict:
-    """Mueve exactamente las filas con accion=mover, al destino escrito, sin volver a clasificar."""
-    try:
-        with _bloqueo():
-            return _aplicar_filas(filas, origen)
-    except Ocupado as exc:
-        return {"movidos": 0, "avisos": [str(exc)], "tanda": None, "publicados": 0}
+    """Mueve exactamente las filas con accion=mover, al destino escrito, sin volver a clasificar.
+
+    Cada fila lleva `hash` (sha256 del contenido al simular): si el archivo cambio despues, queda en el origen y se
+    avisa; una fila sin hash (propuesta anterior a la verificacion) no se mueve: hay que volver a simular. Levanta
+    TandaEnCurso (sin mover nada) si otra tanda tiene el bloqueo despues de esperar ESPERA_BLOQUEO."""
+    with _bloqueo():
+        return _aplicar_filas(filas, origen)
 
 
 def _aplicar_filas(filas: list[dict], origen: str) -> dict:
@@ -1062,8 +1206,23 @@ def _aplicar_filas(filas: list[dict], origen: str) -> dict:
         if not src.is_file():
             avisos.append(f"[ya no esta] {src}")
             continue
+        if es_reservado(src) or es_reservado(destino):
+            avisos.append(f"[archivo de la zona del sistema, no se toca] {src} -> {destino}")
+            continue
         if not destino.resolve().is_relative_to(BASE.resolve()):
             avisos.append(f"[destino fuera de {BASE}] {src} -> {destino}")
+            continue
+        h_simulado = (f.get("hash") or "").strip()
+        if not h_simulado:
+            avisos.append(f"[propuesta sin identidad (anterior a la verificacion): volver a simular] {src}")
+            continue
+        try:
+            h_actual = hash_archivo(src)
+        except OSError as exc:
+            avisos.append(f"[no se pudo verificar, queda en origen] {src}: {exc}")
+            continue
+        if h_actual != h_simulado:
+            avisos.append(f"[cambio desde la simulacion, queda en origen] {src}")
             continue
         try:
             dst = mover(src, destino, f.get("motivo", ""), f.get("detalle", ""), f.get("nombre_nuevo") or None)
@@ -1107,7 +1266,10 @@ def main() -> None:
     asegurar_estructura()
 
     if args.aplicar_csv:
-        aplicar_csv(args.aplicar_csv)
+        try:
+            aplicar_csv(args.aplicar_csv)
+        except TandaEnCurso as exc:
+            print(f"[AVISO] no se movio nada: {exc}")
         return
 
     origen = args.src or INBOX
@@ -1129,7 +1291,13 @@ def main() -> None:
         conteo[d.motivo] += 1
         se_queda = d.motivo in args.omitir or (
             origen != INBOX and d.motivo in NO_CLASIFICADOS and not args.incluir_no_clasificados)
-        filas.append([p, d.carpeta, d.motivo, d.detalle, d.confianza, "queda" if se_queda else "mover"])
+        h = ""
+        if args.csv or not (se_queda or args.dry_run):  # la identidad se toma al clasificar: al aplicar se verifica
+            try:
+                h = hash_archivo(p)
+            except OSError:
+                pass
+        filas.append([p, d.carpeta, d.motivo, d.detalle, d.confianza, "queda" if se_queda else "mover", h])
         if se_queda:
             continue
         if args.dry_run:
@@ -1141,16 +1309,20 @@ def main() -> None:
             print(f"  {str(rel)[:60]:60s} -> {dst_rel}  [{d.motivo} {d.detalle}]")
             continue
         a_mover.append({"archivo": str(p), "destino": str(d.carpeta), "motivo": d.motivo, "detalle": d.detalle,
-                        "accion": "mover"})
+                        "accion": "mover", "hash": h})
     if a_mover:  # con el mismo bloqueo, respaldo y registro de tanda que el dashboard: se puede deshacer
-        r = aplicar_filas(a_mover, f"cli:{origen.name}")
-        for a in r["avisos"]:
-            print(f"  {a}")
-        print(f"\nMovidos: {r['movidos']} | tanda: {r['tanda']}")
+        try:
+            r = aplicar_filas(a_mover, f"cli:{origen.name}")
+        except TandaEnCurso as exc:
+            print(f"[AVISO] no se movio nada: {exc}")
+        else:
+            for a in r["avisos"]:
+                print(f"  {a}")
+            print(f"\nMovidos: {r['movidos']} | tanda: {r['tanda']}")
     if args.csv:
         with args.csv.open("w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(["archivo", "destino", "motivo", "detalle", "confianza", "accion"])
+            w.writerow(["archivo", "destino", "motivo", "detalle", "confianza", "accion", "hash"])
             w.writerows(filas)
         print(f"\nPropuestas: {args.csv}")
     print("\n--- Resumen ---")

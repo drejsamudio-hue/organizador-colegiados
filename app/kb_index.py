@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 
 from config import CORPUS
+from respaldo import escribir_atomico
 
 AREA_NORMAS: dict[str, list[str]] = {
     "consumo": ["24240"],
@@ -156,9 +156,8 @@ def construir(corpus: Path) -> dict:
 def rebuild(corpus: Path = CORPUS) -> Path:
     corpus = Path(corpus)
     destino = corpus / "LOCAL_INDEX.json"
-    tmp = destino.with_name(destino.name + ".tmp")
-    tmp.write_text(json.dumps(construir(corpus), ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, destino)
+    # temporal unico: dos reconstrucciones a la vez (el panel y la consola) no se pisan el .tmp
+    escribir_atomico(destino, json.dumps(construir(corpus), ensure_ascii=False, indent=2))
     return destino
 
 

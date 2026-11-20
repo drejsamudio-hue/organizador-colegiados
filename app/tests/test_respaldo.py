@@ -4,7 +4,14 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 import respaldo as R
+
+requiere_git = pytest.mark.skipif(
+    not (Path(__file__).resolve().parent.parent / ".git").exists(),
+    reason="requiere un checkout de git (sin .git no hay repositorio para el bundle)",
+)
 
 
 def test_respalda_una_copia_con_fecha_y_no_repite_si_no_cambio(tmp_path):
@@ -50,6 +57,7 @@ def test_guardar_cartera_respalda_la_version_anterior(tmp_path):
     assert "111111/2022" in previo.read_text(encoding="utf-8") and "222222/2023" not in previo.read_text(encoding="utf-8")
 
 
+@requiere_git
 def test_bundle_de_codigo_se_puede_verificar(tmp_path):
     repo = Path(__file__).resolve().parent.parent
     r = subprocess.run([sys.executable, str(repo / "respaldo.py"), "--codigo", str(tmp_path)],

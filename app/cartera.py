@@ -5,15 +5,17 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import asdict, dataclass, field, replace
+import time
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime
 from pathlib import Path
 
-from respaldo import respaldar
+from respaldo import CARPETA, respaldar
 
 RE_NUMERO = re.compile(
     r"^\s*(?P<numero>\d{1,7})\s*[/-]\s*(?P<anio>\d{4})"
-    r"(?:\s*bis\s*(?P<bis>\d+)\s*[/-]\s*(?P<bis_anio>\d{2,4}))?"
+    r"(?:\s*bis\s*(?P<bis>\d+)\s*[/-]\s*(?P<bis_anio>\d{4}|\d{2}))?"
     r"(?:\s*\(\s*EX\s*(?P<ex>[^)]+?)\s*\))?\s*$",
     re.I,
 )
@@ -47,7 +49,9 @@ class Expte:
 
 
 def normalizar_expte(texto: str) -> Expte | None:
-    m = RE_NUMERO.match(texto or "")
+    if not isinstance(texto, str):  # un JSON a mano con "expte": 12345
+        return None
+    m = RE_NUMERO.match(texto)
     if not m:
         return None
     g = m.groupdict()
@@ -123,12 +127,72 @@ def guardar(causas: list[Causa], ruta: Path) -> None:
         Path(tmp).unlink(missing_ok=True)
 
 
+class CarteraCorrupta(ValueError):
+    """cartera.json existe pero no se puede leer (guardado interrumpido, no es UTF-8, no es un objeto JSON).
+    Nunca se lo toma por una cartera vacia: quien la guardara despues la pisaria con solo lo nuevo."""
+
+
+class CarteraOcupada(OSError):
+    """Otro proceso (el panel o la consola) esta modificando la cartera."""
+
+
+POSICION_BLOQUEO = 1 << 30  # lejos del contenido, como el bloqueo de las tandas
+
+
+def _trabar(f, trabar: bool) -> None:
+    f.seek(POSICION_BLOQUEO)
+    if os.name == "nt":
+        import msvcrt
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK if trabar else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(f, (fcntl.LOCK_EX | fcntl.LOCK_NB) if trabar else fcntl.LOCK_UN)
+
+
+@contextmanager
+def bloqueada(ruta: Path, espera: float = 20.0):
+    """Una sola modificacion de la cartera por vez, entre procesos. Quien lee, cambia y guarda la cartera lo hace
+    adentro de este bloque: si no, el segundo guardado pisa lo que guardo el primero. El sistema operativo libera el
+    bloqueo si el proceso muere. Orden de bloqueos: este por fuera, el de las tandas (ingesta) por dentro."""
+    lock = ruta.with_name(ruta.name + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open("a+b") as f:
+        limite = time.monotonic() + espera
+        while True:
+            try:
+                _trabar(f, True)
+                break
+            except OSError:
+                if time.monotonic() >= limite:
+                    raise CarteraOcupada("la cartera la esta modificando otro proceso (el panel o la consola); "
+                                         "probar de nuevo en un momento") from None
+                time.sleep(0.2)
+        try:
+            yield
+        finally:
+            _trabar(f, False)
+
+
 def cargar(ruta: Path) -> list[Causa]:
+    """Tolera campos desconocidos y filas sin expte legible: se ignoran esas filas, no todo el archivo. Un archivo
+    ilegible o truncado levanta CarteraCorrupta (es un ValueError), nunca devuelve una cartera vacia."""
     if not ruta.exists():
         return []
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8-sig"))  # con BOM si lo re-guardo Excel o el Bloc de notas
+    except ValueError as exc:  # JSONDecodeError y UnicodeDecodeError
+        raise CarteraCorrupta(f"{ruta.name} no se puede leer ({exc}); la ultima copia buena esta en "
+                              f"{ruta.parent / CARPETA}") from exc
+    if not isinstance(datos, dict):
+        raise CarteraCorrupta(f"{ruta.name} no tiene el formato esperado (se esperaba un objeto con 'causas'); "
+                              f"la ultima copia buena esta en {ruta.parent / CARPETA}")
     causas = []
-    for d in json.loads(ruta.read_text(encoding="utf-8")).get("causas", []):
-        e = normalizar_expte(d.pop("expte"))
-        if e is not None:
-            causas.append(Causa(expte=e, **d))
+    campos_validos = {f.name for f in fields(Causa)} - {"expte"}
+    for d in datos.get("causas", []):
+        if not isinstance(d, dict):
+            continue
+        e = normalizar_expte(d.get("expte"))
+        if e is None:
+            continue
+        causas.append(Causa(expte=e, **{k: v for k, v in d.items() if k in campos_validos}))
     return causas

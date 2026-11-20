@@ -427,3 +427,32 @@ def test_pdf_mixto_con_caratula_corta_conserva_el_texto_nativo(base, db, tmp_pat
     _salida_ocr(ocr, mixto, "el poseedor de buena fe")
     sync(base, db)
     assert buscar(db, "embargada")["total"] == 1 and buscar(db, "poseedor")["total"] == 1
+
+
+def test_al_mover_un_archivo_editado_el_indice_relee_el_contenido(base, db):
+    causa = base / "01_Expedientes/2022-perez-gomez/01_siged"
+    a = escribir(causa / "contrato.txt", "CESION de arrendamiento " * 20)
+    sync(base, db)
+    a.write_text("CESION de servidumbre " * 20, encoding="utf-8")
+    destino = causa / "contrato_revisado.txt"
+    a.rename(destino)
+    assert B.registrar_movimiento(a, destino, base=base, db=db) is True
+    assert buscar(db, "servidumbre")["total"] == 1
+    assert buscar(db, "arrendamiento")["total"] == 0
+    assert buscar(db, "servidumbre")["resultados"][0]["ruta"] == str(destino)
+    assert sync(base, db)["cambiados"] == 0
+
+
+def test_al_mover_un_archivo_sin_cambios_no_se_vuelve_a_leer(base, db, monkeypatch):
+    a = escribir(base / "_INBOX/sin_clasificar/a.txt", "oficio al registro")
+    sync(base, db)
+    destino = base / "01_Expedientes/2022-perez-gomez/01_siged/a.txt"
+    shutil.move(str(a), str(destino))
+    monkeypatch.setattr(B, "texto_de", lambda *a_, **k: pytest.fail("no debe releer el contenido"))
+    assert B.registrar_movimiento(a, destino, base=base, db=db) is True
+    assert buscar(db, "oficio")["resultados"][0]["ruta"] == str(destino)
+
+
+def test_buscar_sin_indice_no_crea_la_base(db):
+    assert B.buscar("honorarios", db=db)["total"] == 0
+    assert not db.exists() and not list(db.parent.glob("busqueda.db*"))

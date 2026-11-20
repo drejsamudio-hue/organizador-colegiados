@@ -79,15 +79,17 @@ def buscar_caratula(texto: str) -> str | None:
     return f"{slug(actor, 3)}-{slug(dem, 3)}"
 
 
+MAX_INTENTOS_NOMBRE = 10_000
+
+
 def destino_unico(dest: Path) -> Path:
     if not dest.exists():
         return dest
-    i = 1
-    while True:
+    for i in range(1, MAX_INTENTOS_NOMBRE + 1):
         cand = dest.with_name(f"{dest.stem}__{i}{dest.suffix}")
         if not cand.exists():
             return cand
-        i += 1
+    raise OSError(f"no se encontro un nombre libre para {dest} ({MAX_INTENTOS_NOMBRE} intentos)")
 
 
 def analizar():
@@ -145,7 +147,7 @@ def analizar():
 
 
 def decidir(f: dict, nombre_caso: dict) -> tuple[Path, str]:
-    ruta = str(f["ruta"])
+    ruta = str(f["ruta"]).replace("/", "\\")  # las carpetas de origen se reconocen con cualquier separador
     prior_ref = "\\Referencia\\" in ruta
     prior_prop = "\\Propios\\" in ruta
 

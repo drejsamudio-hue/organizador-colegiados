@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from docx import Document
@@ -53,3 +54,23 @@ def test_antiword_se_llama_con_la_ruta_de_config(tmp_path, monkeypatch):
     monkeypatch.setattr(X.subprocess, "run", falso)
     assert X.extraer_universal(f) == ("escrito de demanda", None)
     assert llamados == [str(tmp_path / "antiword.exe")]
+
+
+def test_la_clave_de_ocr_distingue_paginas_y_rutas(tmp_path):
+    import extractor as X
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    uno, dos = tmp_path / "a" / "sentencia.pdf", tmp_path / "b" / "sentencia.pdf"
+    for p in (uno, dos):
+        p.write_bytes(b"%PDF-1.4 igual")
+        os.utime(p, (1_700_000_000, 1_700_000_000))
+    assert X._clave_ocr(uno, 3) != X._clave_ocr(uno, 50)
+    assert X._clave_ocr(uno) == X._clave_ocr(uno, X.OCR_PAGINAS)
+    assert X._clave_ocr(uno) != X._clave_ocr(dos)
+
+
+def test_el_logging_se_acota_a_pymupdf():
+    import logging
+    import extractor  # noqa: F401
+    assert logging.root.manager.disable == logging.NOTSET
+    assert logging.getLogger("fitz").level == logging.ERROR or logging.getLogger("pymupdf").level == logging.ERROR

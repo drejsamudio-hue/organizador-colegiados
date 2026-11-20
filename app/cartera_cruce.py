@@ -12,6 +12,7 @@ from fase2_expedientes import slug
 
 SUBCARPETAS = ("00_escritos_propios", "01_siged")
 RE_CARPETA_POR_NUMERO = re.compile(r"^\d{4}-expte-\d+-\d{4}$")
+RE_EXPTE_EN_NOMBRE = re.compile(r"expte-(\d+)-(\d{4})")
 
 
 @dataclass
@@ -38,7 +39,21 @@ def nombre_carpeta(c: Causa) -> str:
     return f"{base}expte-{c.expte.numero}-{c.expte.anio}"
 
 
-def carpeta_existente(c: Causa, casos_dir: Path, mapa: dict[str, str]) -> tuple[str | None, str]:
+def indice_exptes(casos_dir: Path) -> dict[str, str]:
+    """{"expte-N-AAAA": primera carpeta (en orden alfabetico) cuyo nombre lo contiene}.
+
+    Un solo recorrido por 01_Expedientes: sin esto el cruce re-escaneaba la carpeta por cada causa de la cartera
+    y se volvia cuadratico con muchas causas sin carpeta asignada."""
+    indice: dict[str, str] = {}
+    for d in sorted(casos_dir.iterdir(), key=lambda x: x.name) if casos_dir.is_dir() else ():
+        if d.is_dir():
+            for m in RE_EXPTE_EN_NOMBRE.finditer(d.name):
+                indice.setdefault(f"expte-{m.group(1)}-{m.group(2)}", d.name)
+    return indice
+
+
+def carpeta_existente(c: Causa, casos_dir: Path, mapa: dict[str, str],
+                      indice: dict[str, str] | None = None) -> tuple[str | None, str]:
     if c.carpeta and (casos_dir / c.carpeta).is_dir():
         return c.carpeta, "cartera"
     if c.carpeta_prevista and (casos_dir / c.carpeta_prevista).is_dir():
@@ -46,10 +61,11 @@ def carpeta_existente(c: Causa, casos_dir: Path, mapa: dict[str, str]) -> tuple[
     nombre = mapa.get(c.expte.clave)
     if nombre and (casos_dir / nombre).is_dir():
         return nombre, "mapa"
-    clave = f"expte-{c.expte.numero}-{c.expte.anio}"
-    for d in sorted(casos_dir.iterdir()) if casos_dir.is_dir() else ():
-        if d.is_dir() and clave in d.name:
-            return d.name, "nombre"
+    if indice is None:
+        indice = indice_exptes(casos_dir)
+    hallada = indice.get(f"expte-{c.expte.numero}-{c.expte.anio}")
+    if hallada:
+        return hallada, "nombre"
     return None, "sin_carpeta"
 
 
@@ -62,8 +78,9 @@ def cruzar(causas: list[Causa], casos_dir: Path, mapa: dict[str, str]) -> list[C
     out = []
     propuestas_asignadas: dict[str, str] = {}
     base_final: dict[str, str | None] = {}
+    indice = indice_exptes(casos_dir)  # un solo recorrido para todas las causas
     for c in (c for c in causas if c.expte.bis is None):
-        carpeta, via = carpeta_existente(c, casos_dir, mapa)
+        carpeta, via = carpeta_existente(c, casos_dir, mapa, indice)
         propuesta = nombre_carpeta(c)
         if c.expte.sospechoso:
             out.append(Cruce(c, carpeta, via, "revisar", nota="numero de 7 digitos: no parece de SIGED Misiones"))
@@ -83,14 +100,19 @@ def cruzar(causas: list[Causa], casos_dir: Path, mapa: dict[str, str]) -> list[C
             out.append(Cruce(c, carpeta, via, "renombrar", propuesta))
             base_final[c.expte.clave] = propuesta
         else:
-            out.append(Cruce(c, carpeta, via, "ok"))
+            # "prevista": la carpeta coincide con el nombre previsto pero la causa no esta vinculada: se adopta
+            # (diseno del estudio) con la nota a la vista. Confirmar el vinculo (y la confianza alta al rutear)
+            # lo hace cartera_cli.py cruzar.
+            nota = "adoptada por nombre, sin vinculo en la cartera: confirmala con cartera_cli.py cruzar" \
+                if via == "prevista" else ""
+            out.append(Cruce(c, carpeta, via, "ok", nota=nota))
             base_final[c.expte.clave] = carpeta
 
     for c in (c for c in causas if c.expte.bis is not None):
         if c.expte.clave in base_final:
             base, via = base_final[c.expte.clave], "principal"
         else:
-            base, via = carpeta_existente(replace(c, carpeta=None, carpeta_prevista=None), casos_dir, mapa)
+            base, via = carpeta_existente(replace(c, carpeta=None, carpeta_prevista=None), casos_dir, mapa, indice)
             if base is None:
                 base, via = nombre_carpeta(c), "sin_carpeta"
         if base is None or c.expte.sospechoso:
@@ -115,7 +137,7 @@ def aplicar(cruces: list[Cruce], casos_dir: Path, log_csv: Path) -> tuple[list[t
     conflictos: list[tuple] = []
     creadas: dict[str, str] = {}
     log_csv.parent.mkdir(parents=True, exist_ok=True)
-    nuevo = not log_csv.exists()
+    nuevo = not log_csv.exists() or log_csv.stat().st_size == 0  # un archivo vacio tambien lleva encabezado
 
     for x in sorted(cruces, key=lambda x: x.causa.expte.bis is not None):
         if x.accion == "crear":
@@ -191,7 +213,8 @@ def reporte_md(cruces: list[Cruce], sin_causa: list[str], erratas: list[tuple[st
         f"- Carpetas de 01_Expedientes que no estan en la cartera: **{len(sin_causa)}**",
         "",
         "## Asignadas (recibiran archivos con confianza alta)",
-        tabla([f"- {x.causa.expte.clave_completa} -> `{x.carpeta}` ({x.via})" for x in por_accion["ok"]]),
+        tabla([f"- {x.causa.expte.clave_completa} -> `{x.carpeta}` ({x.via})" + (f": {x.nota}" if x.nota else "")
+               for x in por_accion["ok"]]),
         "",
         "## Se crearian",
         tabla([f"- {x.causa.expte.clave_completa} -> `{x.destino}`" for x in por_accion["crear"]]),

@@ -41,3 +41,17 @@ def test_compacto_conserva_encabezado_y_final():
     md = "CABECERA " + "x" * 20000 + " RESUELVE: hacer lugar."
     c = compactar(md, 100, 200)
     assert c.startswith("CABECERA") and c.endswith("hacer lugar.") and len(c) < 500
+
+
+def test_texto_completo_prefiere_el_ocr_completo_a_la_muestra_corta(tmp_path, monkeypatch):
+    import fitz
+    import fallo_md
+    f = tmp_path / "fallo.pdf"
+    d = fitz.open()
+    d.new_page()
+    d.save(str(f))
+    monkeypatch.setattr(fallo_md, "_ocr_completo_guardado", lambda p: "OCR COMPLETO con la parte resolutiva")
+    monkeypatch.setattr(fallo_md, "ocr_pdf", lambda *a, **k: "muestra de 3 paginas")
+    assert fallo_md.texto_completo(f) == "OCR COMPLETO con la parte resolutiva"
+    monkeypatch.setattr(fallo_md, "_ocr_completo_guardado", lambda p: None)
+    assert fallo_md.texto_completo(f) == "muestra de 3 paginas"

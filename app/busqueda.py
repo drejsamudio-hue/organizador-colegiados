@@ -9,6 +9,7 @@ vive junto a los datos, no en el repo. Cubre 01_ a 06_ y _INBOX; no _SISTEMA ni 
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import re
 import sqlite3
@@ -226,6 +227,17 @@ def _insertar(con: sqlite3.Connection, ruta_s: str, base: Path, h: str, tam: int
     return texto is not None
 
 
+def _deshacer_parcial(con: sqlite3.Connection, ruta_s: str) -> None:
+    """Un archivo cuyo alta fallo a medias (la fila de docs entro y la de fts no) no queda a medio indexar: saldria
+    en estado() y no en las busquedas, y como ya figura con su stat, la proxima pasada no lo volveria a leer."""
+    try:
+        fila = con.execute("SELECT id FROM docs WHERE ruta=?", (ruta_s,)).fetchone()
+        if fila is not None and con.execute("SELECT 1 FROM fts WHERE rowid=?", (fila["id"],)).fetchone() is None:
+            con.execute("DELETE FROM docs WHERE id=?", (fila["id"],))
+    except sqlite3.Error:
+        pass
+
+
 def sincronizar(base: Path | None = None, db: Path | None = None, avisar=None) -> dict:
     """Pone el indice al dia. Un archivo movido (mismo contenido, otra ruta) solo cambia de ruta: no se vuelve a leer."""
     base = _base(base)
@@ -294,6 +306,7 @@ def sincronizar(base: Path | None = None, db: Path | None = None, avisar=None) -
                     r["nuevos"] += 1
                 r["sin_texto"] += not _insertar(con, ruta_s, base, h, tam, mt)
             except Exception as exc:  # noqa: BLE001
+                _deshacer_parcial(con, ruta_s)
                 r["errores"] += 1
                 if avisar:
                     avisar(f"[error] {ruta_s}: {exc}")
@@ -315,7 +328,10 @@ def sincronizar(base: Path | None = None, db: Path | None = None, avisar=None) -
 
 def registrar_movimiento(origen: Path, destino: Path, base: Path | None = None, db: Path | None = None) -> bool:
     """Actualiza la ruta de un archivo que acaba de moverse (ingesta, deshacer). No crea el indice si no existe
-    y nunca falla: lo que se escape lo corrige la proxima sincronizacion."""
+    y nunca falla: lo que se escape lo corrige la proxima sincronizacion.
+
+    El texto guardado se reutiliza solo si el contenido sigue igual (mismo hash): si el archivo se edito antes de
+    moverse se relee y se reindexa ahi mismo, porque la sincronizacion veria el mismo stat y no lo volveria a leer."""
     db = Path(db or BUSQUEDA_DB)
     if not db.is_file():
         return False
@@ -323,7 +339,7 @@ def registrar_movimiento(origen: Path, destino: Path, base: Path | None = None, 
     try:
         con = conectar(db)
         try:
-            fila = con.execute("SELECT id FROM docs WHERE ruta=?", (str(origen),)).fetchone()
+            fila = con.execute("SELECT id, hash FROM docs WHERE ruta=?", (str(origen),)).fetchone()
             if fila is None:
                 # llego despues de la ultima sincronizacion: se indexa ya en su lugar nuevo
                 destino = Path(destino)
@@ -337,16 +353,22 @@ def registrar_movimiento(origen: Path, destino: Path, base: Path | None = None, 
             if en_alcance(destino, base):
                 nombre, area, caso, tipo = _meta(Path(destino), base)
                 st = Path(destino).stat()
-                con.execute("UPDATE docs SET ruta=?, tamano=?, mtime_ns=?, nombre=?, area=?, caso=?, tipo=? WHERE id=?",
-                            (str(destino), st.st_size, st.st_mtime_ns, nombre, area, caso, tipo, fila["id"]))
-                con.execute("UPDATE fts SET nombre=? WHERE rowid=?", (nombre, fila["id"]))
+                h = hash_archivo(Path(destino))
+                if h == fila["hash"]:
+                    con.execute("UPDATE docs SET ruta=?, tamano=?, mtime_ns=?, nombre=?, area=?, caso=?, tipo=? WHERE id=?",
+                                (str(destino), st.st_size, st.st_mtime_ns, nombre, area, caso, tipo, fila["id"]))
+                    con.execute("UPDATE fts SET nombre=? WHERE rowid=?", (nombre, fila["id"]))
+                else:
+                    _quitar(con, fila["id"])
+                    _insertar(con, str(destino), base, h, st.st_size, st.st_mtime_ns)
             else:
                 _quitar(con, fila["id"])
             con.commit()
             return True
         finally:
             con.close()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning("el indice no pudo seguir el movimiento %s -> %s: %s", origen, destino, exc)
         return False
 
 
@@ -426,8 +448,12 @@ def main() -> None:
     sys.stdout.reconfigure(errors="replace")
     _prioridad_baja()
     if args.reconstruir:
-        for sufijo in ("", "-wal", "-shm"):
-            Path(str(BUSQUEDA_DB) + sufijo).unlink(missing_ok=True)
+        try:
+            for sufijo in ("", "-wal", "-shm"):
+                Path(str(BUSQUEDA_DB) + sufijo).unlink(missing_ok=True)
+        except OSError as exc:
+            sys.exit(f"No se pudo borrar el indice ({exc}). Cerra el panel del organizador y cualquier otro "
+                     "programa que lo use, y volve a intentar.")
     t0 = time.monotonic()
     r = sincronizar(avisar=lambda m: print(m, flush=True))
     print(" | ".join(f"{k}: {v}" for k, v in r.items()), f"| {round(time.monotonic() - t0)} s")

@@ -35,7 +35,7 @@ from cartera_fuentes import _reparar  # noqa: E402
 from extractor import extraer_universal  # noqa: E402
 from respaldo import escribir_atomico, respaldar  # noqa: E402
 from ingesta import (  # noqa: E402
-    ALIAS_FILE, BASE, CASOS, INBOX, NO_CLASIFICADOS, RUTEO_CSV,
+    hash_archivo, ALIAS_FILE, BASE, CASOS, INBOX, NO_CLASIFICADOS, RUTEO_CSV,
     archivos_pendientes, destino_de, mover, validar_alias,
 )
 
@@ -43,8 +43,8 @@ LOG_FILE = BASE / "_SISTEMA" / "dashboard_log.json"
 import config as cfg  # noqa: E402
 from config import JUSTI_DIR  # noqa: E402
 RE_APELLIDO = re.compile(r"^[a-záéíóúñü]{3,30}$", re.I)
-RE_PROPUESTA = re.compile(r"^REORG_[\w.-]+\.csv$")
-COLUMNAS = ["archivo", "destino", "motivo", "detalle", "confianza", "accion", "extracto"]
+RE_PROPUESTA = re.compile(r"^REORG_[\w.-]+\.csv\Z")
+COLUMNAS = ["archivo", "destino", "motivo", "detalle", "confianza", "accion", "extracto", "hash"]
 HTML_FILE = Path(__file__).parent / "dashboard_app.html"
 
 app = Flask(__name__)
@@ -68,11 +68,24 @@ def _error_json(exc):
 @app.before_request
 def _solo_local():
     # Frena DNS rebinding: otra web no puede hablarle a la API aunque resuelva a 127.0.0.1.
-    if request.host.split(":")[0] not in {"localhost", "127.0.0.1"}:
+    # Los hosts extra (tunel propio, p. ej. Cloudflare) se configuran en ORGANIZADOR_HOSTS o en
+    # _SISTEMA/hosts_permitidos.txt: el tunel debe traer su propia autenticacion.
+    if request.host.split(":")[0].lower() not in cfg.hosts_permitidos():
         abort(403)
     origen = request.headers.get("Origin")
-    if request.method not in {"GET", "HEAD", "OPTIONS"} and origen and origen.split("://", 1)[-1] != request.host:
-        abort(403)
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        if origen and origen.split("://", 1)[-1] != request.host:
+            abort(403)
+        if request.headers.get("Sec-Fetch-Site", "same-origin") not in {"same-origin", "none"}:
+            abort(403)
+
+
+@app.after_request
+def _cabeceras_de_seguridad(resp):
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    return resp
 
 
 def _leer_aliases() -> dict:
@@ -141,7 +154,7 @@ def _reiniciar() -> None:
 @app.route("/api/config")
 def api_config_get():
     return jsonify({"configurado": cfg.CONFIGURADO, "estudio": cfg.ESTUDIO, "ubicacion": cfg.UBICACION,
-                    "apellidos": list(cfg.APELLIDOS_PROPIOS), "base": str(BASE)})
+                    "apellidos": list(cfg.APELLIDOS_PROPIOS), "base": str(BASE), "inbox": str(INBOX)})
 
 
 @app.route("/api/config", methods=["POST"])
@@ -206,8 +219,12 @@ def _inventario() -> dict[str, list[tuple[str, str, float]]]:
 
     Se reutiliza unos segundos entre las consultas de una misma apertura y se descarta al mover o deshacer.
     """
+    if not CASOS.is_dir():
+        _inv["datos"] = None
+        return {}
     ahora = time.time()
-    if _inv["datos"] is None or _inv.get("base") != str(CASOS) or ahora - _inv["t"] > INVENTARIO_TTL:
+    datos = _inv["datos"]  # copia local: otro hilo puede invalidar el cache entre la lectura y el retorno
+    if datos is None or _inv.get("base") != str(CASOS) or ahora - _inv["t"] > INVENTARIO_TTL:
         datos = {}
         for d in CASOS.iterdir():
             if not d.is_dir():
@@ -224,7 +241,7 @@ def _inventario() -> dict[str, list[tuple[str, str, float]]]:
                     lista.append((sub, os.path.splitext(nombre)[1].lower(), mtime))
             datos[d.name] = lista
         _inv.update(t=ahora, datos=datos, base=str(CASOS))
-    return _inv["datos"]
+    return datos
 
 
 def _invalidar_inventario() -> None:
@@ -250,7 +267,7 @@ def api_stats():
         "total_archivos": total_archivos,
         "inbox_pendientes": inbox,
         "aliases_configurados": len(_leer_aliases().get("aliases", [])),
-        **ingesta.causas_sin_carpeta(_cargar_cartera()),
+        **ingesta.causas_sin_carpeta(_cargar_cartera_lectura()),
     })
 
 
@@ -260,7 +277,7 @@ def api_cartera_asignar_carpetas():
     se crea sola al llegar el primer archivo de esa causa."""
     with _cartera_lock:
         causas = _cargar_cartera()
-        ocupadas = {n for c in causas for n in (c.carpeta, c.carpeta_prevista) if n}
+        ocupadas = {n for c in causas for n in (c.carpeta, c.carpeta_prevista) if n} | _carpetas_en_disco()
         asignadas = 0
         for c in causas:
             if not c.carpeta and not c.carpeta_prevista:
@@ -278,7 +295,7 @@ def api_expedientes():
     q = request.args.get("q", "").lower()
     inventario = _inventario()
     casos = []
-    for d in sorted(CASOS.iterdir()):
+    for d in sorted(CASOS.iterdir() if CASOS.is_dir() else []):
         if not d.is_dir() or (q and q not in d.name.lower()):
             continue
         files = inventario.get(d.name, [])
@@ -337,7 +354,7 @@ def api_log():
 @app.route("/api/tipos")
 def api_tipos():
     exts = Counter(e for lista in _inventario().values() for _, e, _ in lista)
-    exts.update(f.suffix.lower() for f in CASOS.iterdir() if f.is_file())
+    exts.update(f.suffix.lower() for f in (CASOS.iterdir() if CASOS.is_dir() else []) if f.is_file())
     return jsonify(dict(exts.most_common(20)))
 
 
@@ -352,11 +369,11 @@ def api_cartera():
     ruta = _sistema() / "cartera.json"
     if not ruta.exists():
         return jsonify({"causas": [], "resumen": {}})
-    causas = cargar_cartera(ruta)
-    cruces = {id(x.causa): x for x in cruzar(causas, CASOS, ingesta._mapa_exptes())}
+    causas = _cargar_cartera_lectura()
+    cruces = {x.causa.expte.clave_completa: x for x in cruzar(causas, CASOS, ingesta._mapa_exptes())}
     out = []
     for c in causas:
-        x = cruces.get(id(c))
+        x = cruces.get(c.expte.clave_completa)
         carpeta = c.carpeta or c.carpeta_prevista
         existe = bool(carpeta) and (CASOS / carpeta).is_dir()
         out.append({
@@ -372,9 +389,36 @@ def api_cartera():
 _cartera_lock = threading.Lock()
 
 
+class CarteraIlegible(Exception):
+    """cartera.json existe pero no se puede leer: quien lo reescribiera lo pisaria vacio."""
+
+
 def _cargar_cartera() -> list:
+    """Para quien despues escribe la cartera: si el archivo esta roto, no se sigue (se pisaria con una lista vacia)."""
     ruta = _sistema() / "cartera.json"
-    return cargar_cartera(ruta) if ruta.exists() else []
+    try:
+        return cargar_cartera(ruta) if ruta.exists() else []
+    except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
+        raise CarteraIlegible(f"cartera.json no se puede leer ({exc}); revisalo o restauralo desde su copia antes de "
+                              "modificar la cartera") from exc
+
+
+def _cargar_cartera_lectura() -> list:
+    """Para las pantallas que solo muestran: una cartera ilegible se ve vacia en vez de tumbar el dashboard."""
+    try:
+        return _cargar_cartera()
+    except CarteraIlegible as exc:
+        app.logger.warning("%s", exc)
+        return []
+
+
+def _carpetas_en_disco() -> set[str]:
+    return {d.name for d in CASOS.iterdir() if d.is_dir()} if CASOS.is_dir() else set()
+
+
+@app.errorhandler(CarteraIlegible)
+def _cartera_ilegible(exc):
+    return jsonify({"error": str(exc)}), 409
 
 
 def _json_objeto():
@@ -384,7 +428,10 @@ def _json_objeto():
 
 def _agregar_a_cartera(items, fuente: str, dependencia: str | None = None) -> dict:
     with _cartera_lock:
-        todas, resumen = cartera_alta.agregar(_cargar_cartera(), items, fuente, dependencia)
+        # las carpetas que ya existen en disco tampoco se pretenden: una causa nueva no adopta
+        # por nombre una carpeta que puede ser de otra causa
+        todas, resumen = cartera_alta.agregar(_cargar_cartera(), items, fuente, dependencia,
+                                              en_disco=_carpetas_en_disco())
         if resumen["agregadas"]:
             guardar_cartera(todas, _sistema() / "cartera.json")
             ingesta._exptes_cache = None
@@ -418,6 +465,7 @@ def api_cartera_editar():
             c.caratula = str(d["caratula"] or "").strip() or None
             if not c.carpeta and not (c.carpeta_prevista and (CASOS / c.carpeta_prevista).is_dir()):
                 ocupadas = {n for x in causas if x is not c for n in (x.carpeta, x.carpeta_prevista) if n}
+                ocupadas |= _carpetas_en_disco()
                 c.carpeta_prevista = cartera_alta.carpeta_libre(c, ocupadas)
         if "dependencia" in d:
             c.dependencia = str(d["dependencia"] or "").strip() or None
@@ -468,7 +516,7 @@ def api_cartera_escanear():
     try:
         profundidad = max(1, min(int(d.get("profundidad") or 6), 12))
         r = cartera_alta.escanear(carpeta, fuentes, d.get("patron"), profundidad,
-                                  {c.expte.clave_completa for c in _cargar_cartera()})
+                                  {c.expte.clave_completa for c in _cargar_cartera_lectura()})
     except (ValueError, TypeError) as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(r)
@@ -497,12 +545,17 @@ def api_escritorio():
     ruta = _ultimo_escritorio()
     if ruta is None:
         return jsonify({"archivo": None, "filas": []})
-    ruta_cartera = _sistema() / "cartera.json"
-    causas = cargar_cartera(ruta_cartera) if ruta_cartera.exists() else []
+    causas = _cargar_cartera_lectura()
     claves = {c.expte.clave_completa for c in causas}
     ids = {c.id_expediente for c in causas if c.id_expediente}
     filas = []
-    for f in json.loads(ruta.read_text(encoding="utf-8")):
+    try:
+        crudo = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        crudo = []
+    for f in crudo if isinstance(crudo, list) else []:
+        if not isinstance(f, dict):
+            continue
         numero = f.get("numero")
         texto = numero.get("texto", "") if isinstance(numero, dict) else (numero or "")
         e = normalizar_expte(texto) if isinstance(texto, str) else None
@@ -531,7 +584,10 @@ def api_historial():
         tandas.append({**t, "motivos": dict(Counter(f["motivo"] for f in sel).most_common()),
                        "areas": dict(areas.most_common(4))})
     aplicado = _sistema() / "CARTERA_APLICADO.csv"
-    renombres = list(csv.DictReader(aplicado.open(encoding="utf-8"))) if aplicado.exists() else []
+    renombres = []
+    if aplicado.exists():
+        with aplicado.open(encoding="utf-8") as fh:
+            renombres = list(csv.DictReader(fh))
     return jsonify({"total_movimientos": len(filas), "tandas": tandas, "carpetas": renombres[::-1]})
 
 
@@ -563,15 +619,40 @@ def api_deshacer():
 _simulaciones: dict[str, dict] = {}
 
 
-def _extracto(p: Path, largo: int = 160) -> str:
-    """Lo primero que el organizador leyo del archivo (texto, OCR o nada): explica el destino propuesto."""
-    try:
-        texto, err = extraer_universal(p)
-    except Exception:  # noqa: BLE001
-        return ""
+def _extracto(p: Path, largo: int = 160, texto: tuple[str | None, str | None] | None = None) -> str:
+    """Lo primero que el organizador leyo del archivo (texto, OCR o nada): explica el destino propuesto.
+
+    `texto`: el (texto, error) ya extraido, para no volver a leer el archivo cuando la clasificacion
+    ya lo hizo (destino_de extrae lo mismo para decidir).
+    """
+    if texto is None:
+        try:
+            texto, err = extraer_universal(p)
+        except Exception:  # noqa: BLE001
+            return ""
+    else:
+        texto, err = texto
     if not texto:
         return f"[{err or 'sin texto'}]"
     return " ".join(texto.split())[:largo]
+
+
+def _texto_de(p: Path) -> tuple[str | None, str | None]:
+    """(texto, error) de una sola lectura; (None, None) si el formato no lleva texto o no se pudo leer."""
+    if p.suffix.lower() not in ingesta.FORMATOS_CON_TEXTO:
+        return (None, None)
+    try:
+        return extraer_universal(p)
+    except Exception:  # noqa: BLE001
+        return (None, None)
+
+
+def _hash_o_vacio(p: Path) -> str:
+    """Un archivo que no se puede leer ahora queda sin identidad (no se mueve) en vez de tumbar toda la propuesta."""
+    try:
+        return hash_archivo(p)
+    except OSError:
+        return ""
 
 
 def _simular(sid: str, origen: Path) -> None:
@@ -581,9 +662,11 @@ def _simular(sid: str, origen: Path) -> None:
         estado["total"] = len(archivos)
         filas = []
         for p in archivos:
-            d = destino_de(p)
+            te = _texto_de(p)  # una sola extraccion por archivo: la usan la clasificacion y el extracto
+            d = destino_de(p, texto=te)
             queda = d.motivo in NO_CLASIFICADOS
-            filas.append([p, d.carpeta, d.motivo, d.detalle, d.confianza, "queda" if queda else "mover", _extracto(p)])
+            filas.append([p, d.carpeta, d.motivo, d.detalle, d.confianza, "queda" if queda else "mover",
+                          _extracto(p, texto=te), _hash_o_vacio(p)])
             estado["hechos"] += 1
         with (_sistema() / estado["csv"]).open("w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
@@ -641,11 +724,14 @@ def api_propuestas():
             filas = ingesta._leer_propuestas(ruta)
         except (OSError, csv.Error, IndexError):
             continue
-        a_mover = [f for f in filas if (f.get("accion") or "").lower() == "mover"]
+        existen = [(Path(f.get("archivo") or "").is_file(), (f.get("accion") or "").lower() == "mover") for f in filas]
         out.append({"nombre": ruta.name,
                     "fecha": datetime.fromtimestamp(ruta.stat().st_mtime).isoformat(timespec="minutes"),
-                    "filas": len(filas), "a_mover": len(a_mover),
-                    "pendientes": sum(1 for f in a_mover if Path(f.get("archivo") or "").is_file())})
+                    "filas": len(filas), "a_mover": sum(1 for _, mover in existen if mover),
+                    "pendientes": sum(1 for ok, mover in existen if ok and mover),
+                    # disponibles = archivos todavia en su lugar, marquen o no para mover: una propuesta de
+                    # solo dudosos tambien se puede abrir y revisar
+                    "disponibles": sum(1 for ok, _ in existen if ok)})
     return jsonify(out)
 
 
@@ -664,6 +750,23 @@ def api_propuesta(nombre):
                     "vieja": datetime.now().timestamp() - ruta.stat().st_mtime > 24 * 3600})
 
 
+def _resolver_destino(valor: str) -> Path | None:
+    """La interfaz manda la ruta relativa que muestra (o una absoluta dentro de la base) y el servidor la resuelve:
+    armarla en el navegador con la barra de Windows rompia "Mover" en otros sistemas. Nunca sale de la base y no
+    acepta rutas de otro sistema operativo."""
+    v = (valor or "").strip()
+    if not v:
+        return None
+    if re.match(r"^[A-Za-z]:[\\/]", v) and os.name != "nt":
+        return None
+    p = Path(v)
+    if not p.is_absolute():
+        if ".." in p.parts:
+            return None
+        p = BASE / p
+    return p
+
+
 @app.route("/api/propuestas/<nombre>/aplicar", methods=["POST"])
 def api_propuesta_aplicar(nombre):
     ruta = _ruta_propuesta(nombre)
@@ -677,18 +780,31 @@ def api_propuesta_aplicar(nombre):
     for i, f in enumerate(filas, 1):
         if not isinstance(f, dict):
             return jsonify({"error": f"Fila {i}: se esperaba un objeto"}), 400
+    simulados = {fila.get("archivo"): fila for fila in ingesta._leer_propuestas(ruta)}
     for f in filas:
-        if _a_mover(f) and not Path(f.get("destino") or "").resolve().is_relative_to(base):
-            return jsonify({"error": f"Destino fuera de {BASE}: {f.get('destino')}"}), 400
-    simulados = {fila.get("archivo") for fila in ingesta._leer_propuestas(ruta)}
-    for f in filas:
-        if _a_mover(f) and f.get("archivo") not in simulados:
-            return jsonify({"error": f"Archivo que no esta en la simulacion: {f.get('archivo')}"}), 400
+        destino = _resolver_destino(str(f.get("destino") or ""))
+        if _a_mover(f):
+            if destino is None or not destino.resolve().is_relative_to(base):
+                return jsonify({"error": f"Destino fuera de {BASE}: {f.get('destino')}"}), 400
+            if f.get("archivo") not in simulados:
+                return jsonify({"error": f"Archivo que no esta en la simulacion: {f.get('archivo')}"}), 400
+        original = simulados.get(f.get("archivo"))
+        if destino is not None and destino.resolve().is_relative_to(base):
+            f["destino"] = str(destino)  # el CSV queda con la ruta absoluta resuelta
+        elif original is not None:
+            f["destino"] = original.get("destino") or ""
+        # la identidad y el extracto salen del CSV de la simulacion, nunca de lo que mande el navegador
+        if original is not None:
+            f["hash"] = original.get("hash") or ""
+            f["extracto"] = original.get("extracto") or ""
     with ruta.open("w", newline="", encoding="utf-8-sig") as fh:
         w = csv.DictWriter(fh, fieldnames=COLUMNAS, extrasaction="ignore")
         w.writeheader()
         w.writerows(filas)
-    r = ingesta.aplicar_filas(filas, nombre)
+    try:
+        r = ingesta.aplicar_filas(filas, nombre)
+    except ingesta.TandaEnCurso as exc:
+        return jsonify({"error": str(exc)}), 409
     _invalidar_inventario()
     _log_action("aplicar", {"propuesta": nombre, "movidos": r["movidos"], "tanda": r["tanda"]})
     return jsonify(r)
@@ -772,16 +888,16 @@ def _propias_sin_numero() -> list[str] | None:
 @app.route("/api/fuera")
 def api_fuera():
     """Carpetas de 01_Expedientes que no estan en la cartera ni fueron marcadas como propias."""
-    ruta_cartera = _sistema() / "cartera.json"
-    causas = cargar_cartera(ruta_cartera) if ruta_cartera.exists() else []
+    causas = _cargar_cartera_lectura()
     en_cartera = {(c.carpeta or c.carpeta_prevista or "").split("/")[0] for c in causas}
     propias = set(_propias_sin_numero() or [])
     senales = {}
     analisis = _sistema() / "PROPIEDAD_CARPETAS.csv"
     if analisis.exists():
-        senales = {r["carpeta"]: r for r in csv.DictReader(analisis.open(encoding="utf-8-sig"))}
+        with analisis.open(encoding="utf-8-sig") as fh:
+            senales = {r["carpeta"]: r for r in csv.DictReader(fh)}
     out = []
-    for d in sorted(x for x in CASOS.iterdir() if x.is_dir()):
+    for d in sorted(x for x in (CASOS.iterdir() if CASOS.is_dir() else []) if x.is_dir()):
         if d.name in en_cartera or d.name in propias:
             continue
         s = senales.get(d.name, {})
@@ -825,8 +941,10 @@ def api_fuera_ajena():
         return jsonify({"error": "carpeta desconocida"}), 404
     filas = []
     for p in (x for x in d.rglob("*") if x.is_file()):
-        dd = ingesta.destino_ajeno(p, d.name)
-        filas.append([p, dd.carpeta, dd.motivo, dd.detalle, dd.confianza, "mover", _extracto(p)])
+        te = _texto_de(p)
+        dd = ingesta.destino_ajeno(p, d.name, texto=te)
+        filas.append([p, dd.carpeta, dd.motivo, dd.detalle, dd.confianza, "mover", _extracto(p, texto=te),
+                      _hash_o_vacio(p)])
     nombre = f"REORG_AJENA_{_nuevo_id()}.csv"
     with (_sistema() / nombre).open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
@@ -964,6 +1082,11 @@ if __name__ == "__main__":
         sys.exit(0)
     ingesta.asegurar_estructura()
     print(f"Organizador: {url}")
+    hosts_extra = cfg.hosts_extra()
+    if hosts_extra:
+        print(f"Hosts permitidos ademas de localhost: {', '.join(sorted(hosts_extra))}")
+        print("  AVISO: si llegas por tunel (Cloudflare u otro), protege la URL con la autenticacion")
+        print("  del tunel; el organizador no trae usuarios ni claves.")
     print("No cierres esta ventana mientras lo uses.")
     if cfg.CONFIGURADO:
         _lanzar_actualizacion()  # lo agregado a mano desde la ultima vez (o todo, la primera vez) entra al indice sin pedirlo
@@ -975,3 +1098,6 @@ if __name__ == "__main__":
             break
         except OSError:
             time.sleep(1)
+    else:
+        print(f"No se pudo abrir el puerto {args.port}: lo usa otro programa. Cerralo o arranca con --port <otro numero>.")
+        sys.exit(1)

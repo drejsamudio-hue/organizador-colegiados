@@ -21,23 +21,30 @@ from contextlib import nullcontext
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from cartera import cargar, fusionar, guardar, normalizar_expte, posibles_erratas  # noqa: E402
+from cartera import (  # noqa: E402
+    CarteraCorrupta, CarteraOcupada, bloqueada, cargar, fusionar, guardar, normalizar_expte, posibles_erratas,
+)
 from cartera_alias import aliases_desde_cartera  # noqa: E402
 from cartera_cruce import aplicar, carpetas_sin_causa, cruzar, reporte_md  # noqa: E402
 from cartera_fuentes import desde_escritorio, desde_log_justi, desde_propios_txt  # noqa: E402
+from respaldo import escribir_atomico, respaldar  # noqa: E402
 
 from config import BASE  # noqa: E402
 
 
 def _importar(args, sistema: Path) -> None:
     ruta = sistema / "cartera.json"
+    if not (args.escritorio or args.log or args.propios):
+        print("Nada para importar: indica --escritorio, --log o --propios (la cartera no se toco).")
+        return
     nuevas = []
+    # utf-8-sig: lo exportado o re-guardado con Excel o el Bloc de notas trae BOM
     if args.escritorio:
-        nuevas += desde_escritorio(json.loads(args.escritorio.read_text(encoding="utf-8")))
+        nuevas += desde_escritorio(json.loads(args.escritorio.read_text(encoding="utf-8-sig")))
     if args.log:
-        nuevas += desde_log_justi(args.log.read_text(encoding="utf-8"))
+        nuevas += desde_log_justi(args.log.read_text(encoding="utf-8-sig"))
     if args.propios:
-        causas, invalidas = desde_propios_txt(args.propios.read_text(encoding="utf-8"))
+        causas, invalidas = desde_propios_txt(args.propios.read_text(encoding="utf-8-sig"))
         nuevas += causas
         (sistema / "cartera_invalidas.txt").write_text("\n".join(invalidas), encoding="utf-8")
         for s in invalidas:
@@ -91,9 +98,10 @@ def _quitar(args, sistema: Path) -> None:
     ruta = sistema / "cartera.json"
     causas = cargar(ruta)
     quitar, desconocidas = set(), []
+    en_cartera = {c.expte.clave_completa for c in causas}
     for n in args.numeros:
         e = normalizar_expte(n)
-        if e is None or e.clave_completa not in {c.expte.clave_completa for c in causas}:
+        if e is None or e.clave_completa not in en_cartera:
             desconocidas.append(n)
         else:
             quitar.add(e.clave_completa)
@@ -107,9 +115,10 @@ def _quitar(args, sistema: Path) -> None:
 def _aliases(sistema: Path, casos: Path) -> None:
     aliases, ambiguos = aliases_desde_cartera(cargar(sistema / "cartera.json"), casos)
     destino = sistema / "aliases_cartera.json"
-    destino.write_text(json.dumps(
+    respaldar(destino)
+    escribir_atomico(destino, json.dumps(
         {"_doc": "Generado por cartera_cli.py aliases. No editar a mano.", "aliases": aliases},
-        ensure_ascii=False, indent=2), encoding="utf-8")
+        ensure_ascii=False, indent=2))
     print(f"{len(aliases)} aliases -> {destino}")
     if ambiguos:
         print(f"Apellidos repetidos (se distinguen por numero): {', '.join(ambiguos)}")
@@ -134,14 +143,19 @@ def main(argv: list[str] | None = None, mapa: dict[str, str] | None = None) -> N
 
     sistema, casos = args.base / "_SISTEMA", args.base / "01_Expedientes"
     sistema.mkdir(parents=True, exist_ok=True)
-    if args.cmd == "importar":
-        _importar(args, sistema)
-    elif args.cmd == "cruzar":
-        _cruzar(args, sistema, casos, mapa)
-    elif args.cmd == "quitar":
-        _quitar(args, sistema)
-    else:
-        _aliases(sistema, casos)
+    try:
+        # leer, modificar y guardar la cartera, de punta a punta, sin que el panel la pise en el medio
+        with bloqueada(sistema / "cartera.json") if args.cmd != "aliases" else nullcontext():
+            if args.cmd == "importar":
+                _importar(args, sistema)
+            elif args.cmd == "cruzar":
+                _cruzar(args, sistema, casos, mapa)
+            elif args.cmd == "quitar":
+                _quitar(args, sistema)
+            else:
+                _aliases(sistema, casos)
+    except (CarteraCorrupta, CarteraOcupada) as exc:
+        sys.exit(f"[ERROR] {exc}")
 
 
 if __name__ == "__main__":
