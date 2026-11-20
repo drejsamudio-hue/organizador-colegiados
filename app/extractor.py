@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 import fitz  # PyMuPDF
@@ -17,6 +18,7 @@ import fitz  # PyMuPDF
 # Solo el ruido de PyMuPDF: logging.disable apagaria los warnings de todo el proceso (Flask incluido).
 logging.getLogger("fitz").setLevel(logging.ERROR)
 logging.getLogger("pymupdf").setLevel(logging.ERROR)
+log = logging.getLogger(__name__)
 
 PAGS_INICIO = 6
 PAGS_FINAL = 1
@@ -30,6 +32,7 @@ _PDF = {".pdf"}
 from config import ANTIWORD, OCR_CACHE, TESSDATA  # noqa: E402,F401
 OCR_PAGINAS = 3
 OCR_DPI = 300
+OCR_SEGUNDOS_POR_PAGINA = 90
 OCR_MINIMO = 100
 OCR_CALIDAD_MINIMA = 0.06
 _PALABRAS_FRECUENTES = set(
@@ -222,6 +225,16 @@ def calidad_texto(texto: str) -> float:
     return sum(len(w) >= 2 and w in _PALABRAS_FRECUENTES for w in palabras) / max(1, len(palabras))
 
 
+def _ocr_paginas(path: Path, paginas: int) -> str:
+    with fitz.open(str(path)) as doc:
+        partes = []
+        for i in range(min(paginas, doc.page_count)):
+            pg = doc.load_page(i)
+            tp = pg.get_textpage_ocr(language="spa", tessdata=str(TESSDATA), full=True, dpi=OCR_DPI)
+            partes.append(pg.get_text(textpage=tp))
+    return "\n".join(partes)
+
+
 def ocr_pdf(path: Path, paginas: int = OCR_PAGINAS) -> str | None:
     """Texto por OCR de las primeras paginas; se guarda en cache para no repetirlo en cada simulacion."""
     if not ocr_disponible():
@@ -231,12 +244,16 @@ def ocr_pdf(path: Path, paginas: int = OCR_PAGINAS) -> str | None:
         if cache.is_file():
             return cache.read_text(encoding="utf-8")
         with fitz.open(str(path)) as doc:
-            partes = []
-            for i in range(min(paginas, doc.page_count)):
-                pg = doc.load_page(i)
-                tp = pg.get_textpage_ocr(language="spa", tessdata=str(TESSDATA), full=True, dpi=OCR_DPI)
-                partes.append(pg.get_text(textpage=tp))
-        texto = "\n".join(partes)
+            n = min(paginas, doc.page_count)
+        resultado: list = []
+        hilo = threading.Thread(target=lambda: resultado.append(_ocr_paginas(path, paginas)), daemon=True)
+        hilo.start()
+        hilo.join(OCR_SEGUNDOS_POR_PAGINA * max(1, n))
+        if hilo.is_alive() or not resultado:
+            # Tesseract colgado: el hilo queda abandonado para no trabar la simulacion; sin cache, se reintenta luego
+            log.warning("OCR abandonado por tiempo: %s", path)
+            return None
+        texto = resultado[0]
         OCR_CACHE.mkdir(parents=True, exist_ok=True)
         cache.write_text(texto, encoding="utf-8")
         return texto

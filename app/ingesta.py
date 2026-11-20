@@ -469,6 +469,9 @@ def _por_rama(p: Path, ext: str, texto: str) -> Destino:
     return Destino(ruta_doctrina(d, BASE), "doctrina", f"{d.tipo} | {d.motivo}", confianza)
 
 
+CEDULA_RE = re.compile(r"(?i)\bc[eé]dula\s+de\s+notificaci[oó]n\b|\bqueda\s+(?:ud\.?\s+)?(?:debidamente\s+)?notificad[oa]")
+
+
 def destino_de(p: Path, texto: tuple[str | None, str | None] | None = None) -> Destino:
     """`texto`: (texto, error) ya extraido, para no leer el archivo dos veces cuando el llamador tambien lo necesita."""
     ext = p.suffix.lower()
@@ -486,7 +489,9 @@ def destino_de(p: Path, texto: tuple[str | None, str | None] | None = None) -> D
     hay_texto = bool(texto and len(texto.strip()) >= 30)
     firmado = hay_texto and bool(MATRICULA_RE.search(texto))
     propio = firmado or (hay_texto and bool(OWNER_RE.search(texto)))
-    es_juris = hay_texto and not propio and bool(JURIS_RE.search(texto[:4000]))
+    # una cedula que libra una Camara o Sala nombra al tribunal pero es de la causa, no un fallo para la biblioteca
+    es_juris = (hay_texto and not propio and bool(JURIS_RE.search(texto[:4000]))
+                and not CEDULA_RE.search(texto[:4000]))
 
     hit = _caso_cartera(nombre, texto if hay_texto and not es_juris else None)
     if hit:

@@ -1140,3 +1140,21 @@ def test_causas_sin_carpeta_en_disco(entorno):
     causas = [causa("111111/2022", "2022-perez-gomez"), causa("222222/2023", "2023-renombrada"),
               Causa(normalizar_expte("333333/2024"))]
     assert I.causas_sin_carpeta(causas) == {"faltantes": ["2023-renombrada"], "sin_nombre": 1}
+
+
+CEDULA_CAMARA = ("CEDULA DE NOTIFICACION. Camara de Apelaciones en lo Civil y Comercial, Sala II, Posadas. "
+                 "Expte. N 111111/2022. Queda Ud. debidamente notificado de la resolución "
+                 "dictada en autos. ") * 3
+
+
+def test_cedula_de_camara_de_una_causa_de_la_cartera_va_a_la_causa_y_no_a_jurisprudencia(entorno, tmp_path):
+    cartera(entorno, causa("111111/2022", "2022-perez-gomez"))
+    d = I.destino_de(escribir(tmp_path, "notificacion.pdf", CEDULA_CAMARA))
+    assert d.motivo in {"cartera", "expediente"}
+    assert d.carpeta == entorno / "01_Expedientes" / "2022-perez-gomez" / "01_siged"
+
+
+def test_fallo_que_cita_un_numero_de_la_cartera_sigue_yendo_a_jurisprudencia(entorno, tmp_path):
+    cartera(entorno, causa("111111/2022", "2022-perez-gomez"))
+    d = I.destino_de(escribir(tmp_path, "articulo-csjn.md", ARTICULO_CSJN + " Ver también expte. 111111/2022."))
+    assert d.motivo == "jurisprudencia"

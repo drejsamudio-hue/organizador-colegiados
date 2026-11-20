@@ -74,3 +74,23 @@ def test_el_logging_se_acota_a_pymupdf():
     import extractor  # noqa: F401
     assert logging.root.manager.disable == logging.NOTSET
     assert logging.getLogger("fitz").level == logging.ERROR or logging.getLogger("pymupdf").level == logging.ERROR
+
+
+def test_el_ocr_que_se_cuelga_se_abandona_y_no_queda_en_cache(tmp_path, monkeypatch):
+    import time
+
+    import fitz
+
+    import extractor as X
+    pdf = tmp_path / "escaneo.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(str(pdf))
+    monkeypatch.setattr(X, "ocr_disponible", lambda: True)
+    monkeypatch.setattr(X, "OCR_CACHE", tmp_path / "cache")
+    monkeypatch.setattr(X, "OCR_SEGUNDOS_POR_PAGINA", 0.3)
+    monkeypatch.setattr(X, "_ocr_paginas", lambda path, paginas: time.sleep(5) or "tarde")
+    t0 = time.monotonic()
+    assert X.ocr_pdf(pdf) is None
+    assert time.monotonic() - t0 < 3
+    assert not (tmp_path / "cache").exists()
