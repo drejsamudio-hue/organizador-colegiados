@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -29,7 +30,7 @@ import busqueda  # noqa: E402
 import ingesta  # noqa: E402
 import cartera_alta  # noqa: E402
 import ocr_setup  # noqa: E402
-from cartera import cargar as cargar_cartera, guardar as guardar_cartera, normalizar_expte  # noqa: E402
+from cartera import CarteraOcupada, bloqueada as cartera_bloqueada, cargar as cargar_cartera, guardar as guardar_cartera, normalizar_expte  # noqa: E402
 from cartera_cruce import cruzar  # noqa: E402
 from cartera_fuentes import _reparar  # noqa: E402
 from extractor import extraer_universal  # noqa: E402
@@ -275,7 +276,7 @@ def api_stats():
 def api_cartera_asignar_carpetas():
     """A las causas sin carpeta ni carpeta prevista (por ejemplo, importadas por consola) les asigna una prevista:
     se crea sola al llegar el primer archivo de esa causa."""
-    with _cartera_lock:
+    with _modificando_cartera():
         causas = _cargar_cartera()
         ocupadas = {n for c in causas for n in (c.carpeta, c.carpeta_prevista) if n} | _carpetas_en_disco()
         asignadas = 0
@@ -387,6 +388,14 @@ def api_cartera():
 
 
 _cartera_lock = threading.Lock()
+ESPERA_CARTERA = 20.0
+
+
+@contextmanager
+def _modificando_cartera():
+    """Para leer, cambiar y guardar la cartera: excluye a los otros pedidos del panel y a la consola (cartera_cli)."""
+    with _cartera_lock, cartera_bloqueada(_sistema() / "cartera.json", espera=ESPERA_CARTERA):
+        yield
 
 
 class CarteraIlegible(Exception):
@@ -421,13 +430,18 @@ def _cartera_ilegible(exc):
     return jsonify({"error": str(exc)}), 409
 
 
+@app.errorhandler(CarteraOcupada)
+def _cartera_ocupada(exc):
+    return jsonify({"error": str(exc)}), 409
+
+
 def _json_objeto():
     d = request.get_json(silent=True)
     return d if isinstance(d, dict) else {}
 
 
 def _agregar_a_cartera(items, fuente: str, dependencia: str | None = None) -> dict:
-    with _cartera_lock:
+    with _modificando_cartera():
         # las carpetas que ya existen en disco tampoco se pretenden: una causa nueva no adopta
         # por nombre una carpeta que puede ser de otra causa
         todas, resumen = cartera_alta.agregar(_cargar_cartera(), items, fuente, dependencia,
@@ -456,7 +470,7 @@ def api_cartera_alta():
 def api_cartera_editar():
     d = _json_objeto()
     e = normalizar_expte(str(d.get("expte") or ""))
-    with _cartera_lock:
+    with _modificando_cartera():
         causas = _cargar_cartera()
         c = next((x for x in causas if e and x.expte.clave_completa == e.clave_completa), None)
         if c is None:
@@ -478,7 +492,7 @@ def api_cartera_editar():
 def api_cartera_baja():
     """Saca la causa de la cartera. No toca ninguna carpeta ni archivo."""
     e = normalizar_expte(str(_json_objeto().get("expte") or ""))
-    with _cartera_lock:
+    with _modificando_cartera():
         causas = _cargar_cartera()
         resto = [x for x in causas if not (e and x.expte.clave_completa == e.clave_completa)]
         if e is None or len(resto) == len(causas):

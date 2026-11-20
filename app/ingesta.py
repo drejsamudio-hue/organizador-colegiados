@@ -941,7 +941,8 @@ class TandaEnCurso(Ocupado):
     """Otra tanda (aplicar o deshacer, desde el dashboard o la consola) esta corriendo sobre la misma base."""
 
 
-POSICION_BLOQUEO = 1 << 30  # el byte trabado queda lejos del contenido: el pid escrito se puede leer en Windows
+POSICION_BLOQUEO = 0  # el mismo byte que las versiones anteriores: un .exe viejo y uno nuevo se excluyen
+POSICION_PID = 1  # fuera del byte trabado: en Windows el pid se puede leer mientras dura el bloqueo
 
 
 def _trabar(f, trabar: bool) -> None:
@@ -956,7 +957,9 @@ def _trabar(f, trabar: bool) -> None:
 
 def _pid_del_bloqueo(ruta: Path) -> int | None:
     try:
-        return int(ruta.read_bytes()[:20].decode("ascii", "ignore").strip()) or None
+        with ruta.open("rb") as f:
+            f.seek(POSICION_PID)
+            return int(f.read(20).decode("ascii", "ignore").strip()) or None
     except (OSError, ValueError):
         return None
 
@@ -982,8 +985,8 @@ def bloqueo_tanda(espera: float | None = None):
                                        "; probar de nuevo en un momento") from None
                 time.sleep(0.2)
         try:
-            f.seek(0)
-            f.truncate(0)
+            f.truncate(POSICION_PID)
+            f.seek(POSICION_PID)
             f.write(str(os.getpid()).encode("ascii"))
             f.flush()
         except OSError:
@@ -992,7 +995,7 @@ def bloqueo_tanda(espera: float | None = None):
             yield
         finally:
             try:
-                f.truncate(0)
+                f.truncate(POSICION_PID)
                 f.flush()
             except OSError:
                 pass
