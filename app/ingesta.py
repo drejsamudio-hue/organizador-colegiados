@@ -489,11 +489,11 @@ def destino_de(p: Path, texto: tuple[str | None, str | None] | None = None) -> D
     hay_texto = bool(texto and len(texto.strip()) >= 30)
     firmado = hay_texto and bool(MATRICULA_RE.search(texto))
     propio = firmado or (hay_texto and bool(OWNER_RE.search(texto)))
-    # una cedula que libra una Camara o Sala nombra al tribunal pero es de la causa, no un fallo para la biblioteca
-    es_juris = (hay_texto and not propio and bool(JURIS_RE.search(texto[:4000]))
-                and not CEDULA_RE.search(texto[:4000]))
+    es_juris = hay_texto and not propio and bool(JURIS_RE.search(texto[:4000]))
+    # una cedula que libra una Camara o Sala nombra al tribunal: si su numero es de la cartera, va a la causa
+    cedula = hay_texto and bool(CEDULA_RE.search(texto[:4000]))
 
-    hit = _caso_cartera(nombre, texto if hay_texto and not es_juris else None)
+    hit = _caso_cartera(nombre, texto if hay_texto and (not es_juris or cedula) else None)
     if hit:
         carpeta, via, fuerte = hit
         sub_c = "00_escritos_propios" if firmado or _borrador(nombre, ext, via) else "01_siged"

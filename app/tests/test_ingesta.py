@@ -1158,3 +1158,12 @@ def test_fallo_que_cita_un_numero_de_la_cartera_sigue_yendo_a_jurisprudencia(ent
     cartera(entorno, causa("111111/2022", "2022-perez-gomez"))
     d = I.destino_de(escribir(tmp_path, "articulo-csjn.md", ARTICULO_CSJN + " Ver también expte. 111111/2022."))
     assert d.motivo == "jurisprudencia"
+
+
+def test_fallo_sobre_cedulas_de_notificacion_sigue_yendo_a_jurisprudencia(entorno, tmp_path):
+    cartera(entorno, causa("111111/2022", "2022-perez-gomez"))
+    fallo = ("Camara de Apelaciones en lo Civil y Comercial, Sala II, Posadas. SENTENCIA. Y VISTOS: los autos sobre "
+             "nulidad de la cedula de notificacion cursada al demandado. CONSIDERANDO: que la cedula de notificacion "
+             "debe contener copia de la demanda. RESUELVE: hacer lugar al recurso. ") * 3
+    d = I.destino_de(escribir(tmp_path, "fallo.pdf", fallo))
+    assert d.motivo == "jurisprudencia" and entorno / "02_Jurisprudencia" in d.carpeta.parents
