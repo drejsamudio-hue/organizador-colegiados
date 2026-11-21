@@ -73,3 +73,11 @@ Todo vive dentro de tu carpeta base:
 | `ORGANIZADOR_CONFIG` | Ruta alternativa del `config.json`. |
 
 Para otro puerto: `Organizador.exe --port 5060`.
+
+## Licencia
+
+Copyright (C) 2026 Estanislao Javier Samudio.
+
+Este programa es software libre bajo la [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0): se puede usar, copiar, modificar y redistribuir, siempre que las versiones modificadas que se distribuyan o se ofrezcan por red mantengan el código abierto bajo la misma licencia. Incluye PyMuPDF, también bajo AGPL-3.0.
+
+Se entrega **tal cual, sin garantía de ningún tipo**. El programa mueve y renombra archivos: quien lo usa es responsable de revisar las propuestas antes de aplicarlas y de mantener copias de seguridad.
