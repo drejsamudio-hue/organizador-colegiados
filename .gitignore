@@ -8,3 +8,7 @@ build/
 dist/
 *.spec
 *.rar
+
+# entorno de revision local
+.venv/
+.coverage

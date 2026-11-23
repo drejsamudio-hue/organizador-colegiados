@@ -638,6 +638,11 @@ def _extracto(p: Path, largo: int = 160, texto: tuple[str | None, str | None] | 
 
     `texto`: el (texto, error) ya extraido, para no volver a leer el archivo cuando la clasificacion
     ya lo hizo (destino_de extrae lo mismo para decidir).
+
+    El extracto se guarda dentro de una celda del CSV de la simulacion: una comilla `"` suelta (comillas de un
+    escrito, pulgadas) desalinea las columnas al leerlo y esa fila pierde su hash, asi que deja de poder moverse, o
+    toma el hash de la fila de al lado. Se pasan a comillas tipograficas antes de recortar y el recorte no parte un
+    par por la mitad.
     """
     if texto is None:
         try:
@@ -648,7 +653,13 @@ def _extracto(p: Path, largo: int = 160, texto: tuple[str | None, str | None] | 
         texto, err = texto
     if not texto:
         return f"[{err or 'sin texto'}]"
-    return " ".join(texto.split())[:largo]
+    out = " ".join(texto.replace('"', "«»").split())
+    if len(out) > largo:
+        out = out[:largo].rstrip()
+        if out.count("«") > out.count("»"):  # el corte partio un par: se abrevia el ultimo
+            out = out[:out.rfind("«")].rstrip() + "…"
+        out = out[:largo]
+    return out
 
 
 def _texto_de(p: Path) -> tuple[str | None, str | None]:
@@ -769,15 +780,22 @@ def _resolver_destino(valor: str) -> Path | None:
     armarla en el navegador con la barra de Windows rompia "Mover" en otros sistemas. Nunca sale de la base y no
     acepta rutas de otro sistema operativo."""
     v = (valor or "").strip()
-    if not v:
+    if not v or "\x00" in v:
         return None
     if re.match(r"^[A-Za-z]:[\\/]", v) and os.name != "nt":
         return None
+    encima: list[str] = []
+    for parte in re.split(r"[\\/]+", v):  # POSIX no parte "..\\..\\x": se separan las dos barras a mano
+        if parte in ("", "."):
+            continue
+        if parte == "..":
+            return None
+        encima.append(parte)
+    if not encima:
+        return None
     p = Path(v)
     if not p.is_absolute():
-        if ".." in p.parts:
-            return None
-        p = BASE / p
+        p = BASE.joinpath(*encima)
     return p
 
 

@@ -306,3 +306,30 @@ def test_cada_archivo_de_una_carpeta_ajena_se_extrae_una_sola_vez(entorno, clien
     monkeypatch.setattr(I, "extraer_universal", contado)
     assert cliente.post("/api/fuera/ajena", json={"carpeta": "2009-ruiz-sosa"}).status_code == 200
     assert llamadas == [f.name]
+
+
+# -- A5: comillas en el extracto y rutas con barra invertida (revision de 2026-11) -----------------
+
+def test_un_extracto_con_comillas_no_desalinea_el_csv_de_la_simulacion(entorno, cliente, tmp_path):
+    """El texto de un escrito suele traer comillas ("DANOS Y PERJUICIOS"). Dentro del CSV desalineaban las
+    columnas: la fila perdia su hash y el archivo ya no se podia mover (o tomaba el hash de otra fila)."""
+    cuerpo = ('Expte 1234/2020 PEREZ, JUAN c/ GOMEZ s/ "DANOS Y PERJUICIOS", con costas y algo mas de texto '
+              'para que el extracto supere el limite de ciento sesenta caracteres y se recorte')
+    a = escribir(tmp_path / "con comillas.txt", cuerpo)
+    D._simulaciones["s5"] = {"id": "s5", "origen": str(tmp_path), "csv": "REORG_s5.csv", "total": None,
+                             "hechos": 0, "estado": "corriendo", "error": None}
+    D._simular("s5", tmp_path)
+    fila = next(f for f in I._leer_propuestas(entorno / "_SISTEMA" / "REORG_s5.csv") if f["archivo"] == str(a))
+    assert fila["hash"] == hash_archivo(a)                      # la fila conserva su propia identidad
+    assert '"' not in fila["extracto"] and fila["extracto"].count("«") == fila["extracto"].count("»")
+    r = cliente.post("/api/propuestas/REORG_s5.csv/aplicar", json={"filas": [fila_ui(a, DESTINO_REL)]})
+    assert r.status_code == 200 and r.get_json()["movidos"] == 1
+
+
+def test_resolver_destino_rechaza_punto_punto_escrito_con_barra_invertida(entorno):
+    """En POSIX '..\\..\\x' es un solo nombre de archivo: sin separarlo a mano salia de la base."""
+    assert D._resolver_destino("01_Expedientes\\..\\..\\x") is None
+    assert D._resolver_destino("01_Expedientes\\x") == entorno / "01_Expedientes" / "x"
+    assert D._resolver_destino("..\\x") is None
+    # una absoluta se resuelve y el endpoint la rechaza por quedar fuera de la base (400), como antes
+    assert not D._resolver_destino("/etc/x").resolve().is_relative_to(entorno.resolve())
